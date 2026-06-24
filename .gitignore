@@ -1,0 +1,22 @@
+# Dependências
+node_modules/
+
+# Ambiente e credenciais
+.env
+
+# Pasta de dados (runtime) — mantém só o .gitkeep
+data/*
+!data/.gitkeep
+
+# Testes
+*.test.js
+*.tests.js
+teste-*.js
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
