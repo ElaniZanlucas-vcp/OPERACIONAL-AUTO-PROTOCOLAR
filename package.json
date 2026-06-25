@@ -1,0 +1,15 @@
+{
+  "name": "operacional-auto-protocolar",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "pre": "node main.js pre",
+    "api": "node src/web/api-site.js",
+    "recorder": "node src/web/recorder.js",
+    "teste-partes": "node src/web/teste-partes.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.49.0"
+  }
+}

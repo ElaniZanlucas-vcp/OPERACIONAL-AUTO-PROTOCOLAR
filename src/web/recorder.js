@@ -2,10 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const { prepararPagina, abrirBrowser, garantirSessao, aplicarFiltros } = require('./crawler');
 
-const RECORD_FILE   = path.resolve(__dirname, '../../data/recording.json');
-const INACTIVITY_MS = 7000;
+const RECORD_FILE    = path.resolve(__dirname, '../../data/recording.json');
+const INACTIVITY_MS  = 7000;
 
-const ESAJ_LOGIN_URL = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
+const ESAJ_LOGIN_URL  = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
+const SIGAD_INICIO_URL = 'https://sistemas.vcpericia.com.br/sigad/inicio/index.xhtml';
 
 // --- helpers de automação ---
 
@@ -403,14 +404,116 @@ async function modoPastaDigital() {
   }, 300);
 }
 
+// --- modo: fluxo-protocolar ---
+// Abre o SIGAD na página inicial e grava as interações do usuário pelas etapas 1-4.
+// Monitora também novas abas abertas (ex: ESAJ ao clicar no processo na etapa 4).
+// Inatividade de 10s para encerrar.
+
+async function modoFluxoProtocolar() {
+  const { browser, context } = await abrirBrowser();
+  const page = context.pages()[0] ?? await context.newPage();
+
+  await page.goto(SIGAD_INICIO_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  await aguardarAjax(page);
+
+  const urlInicial = page.url();
+  console.log(`[recorder] SIGAD início carregado: ${urlInicial}`);
+  await injectSpy(page);
+
+  page.on('framenavigated', async (frame) => {
+    if (frame !== page.mainFrame()) return;
+    console.log(`[recorder][SIGAD] nav → ${frame.url()}`);
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await injectSpy(page);
+  });
+
+  // Monitora novas abas abertas (ESAJ ao clicar no processo na etapa 4)
+  const paginasMonitoradas = new Set([page]);
+  context.on('page', async (novaAba) => {
+    paginasMonitoradas.add(novaAba);
+    await novaAba.waitForLoadState('domcontentloaded').catch(() => {});
+    console.log(`[recorder][ESAJ] nova aba: ${novaAba.url()}`);
+    await injectSpy(novaAba);
+    novaAba.on('framenavigated', async (frame) => {
+      if (frame !== novaAba.mainFrame()) return;
+      console.log(`[recorder][ESAJ] nav → ${frame.url()}`);
+      await novaAba.waitForLoadState('domcontentloaded').catch(() => {});
+      await injectSpy(novaAba);
+    });
+  });
+
+  const recording = {
+    context:      'fluxo-protocolar',
+    navigations:  [{ t: Date.now(), url: urlInicial }],
+    interactions: [],
+    tableStructure: null,
+  };
+
+  const INATIVIDADE = 10000;
+  let lastActivity  = Date.now();
+  let hasInteracted = false;
+  let done          = false;
+
+  console.log('\n╔══════════════════════════════════════════════════════════════╗');
+  console.log('║  [recorder] PRONTO — FLUXO PROTOCOLAR (Etapas 1–4)          ║');
+  console.log('║                                                                ║');
+  console.log('║  Navegue: Fases → Documentos → Dados Básicos → Processo      ║');
+  console.log('║  Ao clicar no Processo, o ESAJ abrirá e será gravado também. ║');
+  console.log('║  Gravação encerra após 10s sem atividade.                     ║');
+  console.log('╚══════════════════════════════════════════════════════════════╝\n');
+
+  await new Promise((resolve) => {
+    const poll = setInterval(async () => {
+      if (done) return;
+
+      for (const pg of paginasMonitoradas) {
+        try {
+          const events = await pg.evaluate(() => {
+            const evs = window.__spy_log ?? [];
+            window.__spy_log = [];
+            return evs;
+          });
+
+          if (events.length > 0) {
+            recording.interactions.push(...events);
+            hasInteracted = true;
+            lastActivity  = Date.now();
+
+            const origem = pg === page ? 'SIGAD' : 'ESAJ';
+            events.forEach((e) => {
+              const el   = e.el;
+              const desc = `<${el.tag}${el.id ? ` id="${el.id}"` : ''}> "${(el.text ?? '').slice(0, 60)}"`;
+              if (e.type === 'change')     console.log(`[recorder][${origem}] change → ${desc}  value="${el.value}"`);
+              else if (e.type === 'input') console.log(`[recorder][${origem}] input  → ${desc}  value="${el.value}"`);
+              else                         console.log(`[recorder][${origem}] click  → ${desc}`);
+            });
+          }
+        } catch {}
+      }
+
+      if (hasInteracted && Date.now() - lastActivity >= INATIVIDADE) {
+        clearInterval(poll);
+        done = true;
+        recording.tableStructure = await captureTableStructure(page).catch(() => null);
+        fs.writeFileSync(RECORD_FILE, JSON.stringify(recording, null, 2));
+        console.log('\n[recorder] Gravação finalizada.');
+        console.log('[recorder] Arquivo salvo em: data/recording.json');
+        await browser.close();
+        resolve();
+      }
+    }, 300);
+  });
+}
+
 // --- fluxo principal ---
 
 async function main() {
   const modo = process.argv[2];
-  if (modo === 'esaj-login')          await modoEsajLogin();
-  else if (modo === 'guia-processo')  await modoGuiaProcesso();
-  else if (modo === 'pasta-digital')  await modoPastaDigital();
-  else                                await modoVisualizarAutos();
+  if (modo === 'esaj-login')            await modoEsajLogin();
+  else if (modo === 'guia-processo')    await modoGuiaProcesso();
+  else if (modo === 'pasta-digital')    await modoPastaDigital();
+  else if (modo === 'fluxo-protocolar') await modoFluxoProtocolar();
+  else                                  await modoVisualizarAutos();
 }
 
 main().catch((err) => {
