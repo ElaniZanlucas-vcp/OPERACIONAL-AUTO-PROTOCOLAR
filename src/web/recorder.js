@@ -505,6 +505,105 @@ async function modoFluxoProtocolar() {
   });
 }
 
+// --- modo: encaminhar ---
+// Abre o SIGAD, entra no 1º serviço e navega automaticamente até a aba Dados Básicos
+// (estado em que o fluxo estará ao chegar na etapa 11).
+// A partir daí grava as interações do usuário: Fases → Encaminhar → preencher → salvar.
+// Inatividade de 10s para encerrar.
+
+async function modoEncaminhar() {
+  const { browser, context } = await abrirBrowser();
+  const page = context.pages()[0] ?? await context.newPage();
+
+  // 1. Abre SIGAD na página inicial e injeta o spy imediatamente
+  await page.goto(SIGAD_INICIO_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  await aguardarAjax(page);
+  console.log(`[recorder] SIGAD início: ${page.url()}`);
+  await injectSpy(page);
+
+  // Re-injeta após qualquer navegação interna
+  page.on('framenavigated', async (frame) => {
+    if (frame !== page.mainFrame()) return;
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await injectSpy(page);
+  });
+
+  // 2. Abre o dialog do primeiro serviço
+  const primeiroServico = page.locator('[id="formServico:tabela_data"] tr').first().locator('span.Fs14.FontSemiBold');
+  await primeiroServico.waitFor({ state: 'visible', timeout: 10000 });
+  console.log('[recorder] Clicando no 1º serviço...');
+  await primeiroServico.click();
+  await aguardarAjax(page);
+  await page.locator('[id="formDlgVerServico"]').waitFor({ state: 'visible', timeout: 10000 });
+  console.log('[recorder] Dialog do serviço aberto.');
+
+  // 3. Navega para a aba Dados Básicos (estado inicial da etapa 11)
+  await page.locator('[id="formDlgVerServico:tabViewEvento"] a:has-text("Dados Básicos")').click();
+  await aguardarAjax(page);
+  console.log('[recorder] Aba Dados Básicos ativa — gravação iniciada.');
+
+  const urlInicial = page.url();
+  const recording = {
+    context:      'encaminhar',
+    navigations:  [{ t: Date.now(), url: urlInicial }],
+    interactions: [],
+    tableStructure: null,
+  };
+
+  const INATIVIDADE = 10000;
+  let lastActivity  = Date.now();
+  let hasInteracted = false;
+  let done          = false;
+
+  // Descarta cliques automáticos do setup antes de iniciar a gravação manual
+  await page.evaluate(() => { window.__spy_log = []; }).catch(() => {});
+
+  console.log('\n╔══════════════════════════════════════════════════════════════╗');
+  console.log('║  [recorder] PRONTO — ENCAMINHAR (Etapa 11)                   ║');
+  console.log('║                                                                ║');
+  console.log('║  Navegue: aba Fases → Encaminhar → preencha os campos        ║');
+  console.log('║  Pare ANTES de clicar em Salvar (simulação).                  ║');
+  console.log('║  Gravação encerra após 10s sem atividade.                     ║');
+  console.log('╚══════════════════════════════════════════════════════════════╝\n');
+
+  await new Promise((resolve) => {
+    const poll = setInterval(async () => {
+      if (done) return;
+      try {
+        const events = await page.evaluate(() => {
+          const evs = window.__spy_log ?? [];
+          window.__spy_log = [];
+          return evs;
+        });
+
+        if (events.length > 0) {
+          recording.interactions.push(...events);
+          hasInteracted = true;
+          lastActivity  = Date.now();
+          events.forEach((e) => {
+            const el   = e.el;
+            const desc = `<${el.tag}${el.id ? ` id="${el.id}"` : ''}> "${(el.text ?? '').slice(0, 60)}"`;
+            if (e.type === 'change')     console.log(`[recorder] change → ${desc}  value="${el.value}"`);
+            else if (e.type === 'input') console.log(`[recorder] input  → ${desc}  value="${el.value}"`);
+            else                         console.log(`[recorder] click  → ${desc}`);
+          });
+        }
+      } catch {}
+
+      if (hasInteracted && Date.now() - lastActivity >= INATIVIDADE) {
+        clearInterval(poll);
+        done = true;
+        recording.tableStructure = await captureTableStructure(page).catch(() => null);
+        fs.writeFileSync(RECORD_FILE, JSON.stringify(recording, null, 2));
+        console.log('\n[recorder] Gravação finalizada.');
+        console.log('[recorder] Arquivo salvo em: data/recording.json');
+        await browser.close();
+        resolve();
+      }
+    }, 300);
+  });
+}
+
 // --- fluxo principal ---
 
 async function main() {
@@ -513,6 +612,7 @@ async function main() {
   else if (modo === 'guia-processo')    await modoGuiaProcesso();
   else if (modo === 'pasta-digital')    await modoPastaDigital();
   else if (modo === 'fluxo-protocolar') await modoFluxoProtocolar();
+  else if (modo === 'encaminhar')       await modoEncaminhar();
   else                                  await modoVisualizarAutos();
 }
 

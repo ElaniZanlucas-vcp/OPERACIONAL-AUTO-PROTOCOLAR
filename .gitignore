@@ -13,6 +13,8 @@ data/*
 *.tests.js
 teste-*.js
 
+src/web/recorder.js
+
 # Logs
 *.log
 

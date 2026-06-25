@@ -10,14 +10,14 @@ $\green ✔$
 FLUXOGRAMA:
 
 [INÍCIO DA ROTINA] (08:00 / 14:00)
-1. Login Esaj, Sigad (mesma abordagem)
+1. Login Esaj, Sigad $\green ✔$
 
 [Início do loop]:
 
-2. Acessar Fases 
-3. Acessar Documentos p/ conferência c/ a Fase
-4. Acessar Dados Básicos e clicar no Processo
-5. Acessar o Servidor p/ extrair Cabeçalho do documento
+2. Acessar Fases $\green ✔$
+3. Acessar Documentos p/ conferência c/ a Fase $\green ✔$
+4. Acessar Dados Básicos e clicar no Processo $\green ✔$
+5. Acessar o Servidor p/ extrair Cabeçalho do documento $\orange {verificar outros docs}$
 6. Extrair Partes do Processo e o Cabeçalho no esaj $\green ✔$
 [Loop Alvará]
 7. Conferência das Partes do Processo c/ Cabeçalho do Documento e Peticionar
@@ -26,7 +26,7 @@ FLUXOGRAMA:
 9. Preencher Dados da Petição 
 10. Salvar para protocolar depois (add condicional de Alvará p/ clicar no Processo e Peticionar - minilooping caso tenha Alvará)
 [Fim Loop Alvará]
-11. Retorno ao sigad: Encaminhar
+11. Retorno ao sigad: Encaminhar $\green ✔$
 12. Iterar
 
 [Fim do loop]
@@ -37,8 +37,8 @@ FLUXOGRAMA:
 
 Vamos criar o fluxograma inicial utilizando o recorder.js. Desta vez o target_url do sigad é na página principal (https://sistemas.vcpericia.com.br/sigad/inicio/index.xhtml). 
 Vamos mostrar o fluxo até a etapa 4 e seremos redirecionados para o esaj (para começar a etapa 6). Deixe 10s de inatividade para parar o recorder. Após isso explicaremos oq extrair em cada etapa.
-==============================
-[ETAPA-2] FLUXOGRAMA ACESSAR FASES:
+============================== 
+[ETAPA-2] FLUXOGRAMA ACESSAR FASES: 
 ==============================
 1. Entrar no Serviço 
 2. Clicar na aba Fases
@@ -165,10 +165,10 @@ SOLICITANTE:
 Obs: para fins de teste, podemos fazer o recorder clicar em Fechar. Assim ele acha o footer corretamente e seria só atualizar o id para Salvar depois.
 
 ==============================
-[ETAPA-11] FLUXOGRAMA SIGAD - ENCAMINHAR:
+[ETAPA-11] FLUXOGRAMA SIGAD - ENCAMINHAR: $\green ✔$
 ==============================
 1. Retorno ao sigad
-2. Ir para Detalhes do Serviço e clicar em Encaminhar
+2. Ir para Detalhes do Serviço, Fases e clicar em Encaminhar
 3. Preencher os campos conforme está abaixo, clicar em Encaminhar e salvar os detalhes
     Nome: Dayane Franco Alves
     Fase: não é alterada
