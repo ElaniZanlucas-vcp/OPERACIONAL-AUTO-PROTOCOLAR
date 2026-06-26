@@ -38,7 +38,7 @@ FLUXOGRAMA:
 Vamos criar o fluxograma inicial utilizando o recorder.js. Desta vez o target_url do sigad é na página principal (https://sistemas.vcpericia.com.br/sigad/inicio/index.xhtml). 
 Vamos mostrar o fluxo até a etapa 4 e seremos redirecionados para o esaj (para começar a etapa 6). Deixe 10s de inatividade para parar o recorder. Após isso explicaremos oq extrair em cada etapa.
 ============================== 
-[ETAPA-2] FLUXOGRAMA ACESSAR FASES: 
+[ETAPA-2] FLUXOGRAMA ACESSAR FASES:  $\green ✔$
 ==============================
 1. Entrar no Serviço 
 2. Clicar na aba Fases
@@ -48,7 +48,7 @@ Vamos mostrar o fluxo até a etapa 4 e seremos redirecionados para o esaj (para 
 
 
 ==============================
-[ETAPA-3] FLUXOGRAMA ACESSAR DOCUMENTOS:
+[ETAPA-3] FLUXOGRAMA ACESSAR DOCUMENTOS:  $\green ✔$
 ==============================
 1. Clicar na aba Documentos
 2. Copiar Documento mais recente
@@ -59,14 +59,14 @@ Vamos mostrar o fluxo até a etapa 4 e seremos redirecionados para o esaj (para 
 
 
 ==============================
-[ETAPA-4] FLUXOGRAMA ACESSAR DADOS BÁSICOS:
-==============================
+[ETAPA-4] FLUXOGRAMA ACESSAR DADOS BÁSICOS:  $\green ✔$
+============================== 
 1. Clicar na aba Dados Básicos
 2. Clicar no processo (uma nova guia será aberta com a guia do esaj no processo)
 
 
 ==============================
-[ETAPA-5] FLUXOGRAMA ACESSAR SERVIDOR (Trabalhos Finais):
+[ETAPA-5] FLUXOGRAMA ACESSAR SERVIDOR (Trabalhos Finais): $\orange {verificar outros docs formato cabeçalho}$
 ==============================
 - Acessar pelo path?
 - Compensa chamar Gemini API p/ olhar Cabeçalho do documento e rodapés? Forma + simples?
@@ -102,8 +102,7 @@ Ao final da extração, todos os dados devem estar em maiúsculo para fins de co
 [ETAPA-7] PETICIONAR OU RETORNAR:
 ==============================
 1. Com a extração de dados do documento e do esaj, conferimos se os dados estão batendo corretamente
- (considerar que "E outros" no doc é vinculado a mais de um Réu ou Autor, já que neste caso, é mostrado apenas o primeiro que aparece -> tabelaPartesPrincipais)
-Mostraremos um exemplo de verificação dos dados a partir do Documento em Trablhos Finais. Os termos dentro de {} são os termos a serem comparados dos dados extraídos do esaj.
+Mostraremos um exemplo de verificação dos dados a partir do Documento em Trabalhos Finais. Os termos dentro de {} são os termos a serem comparados dos dados extraídos do esaj.
 
 1ª página do Documento:
 "AO JUÍZO DA {Vara} DA COMARCA DE {Foro}" -> Vara, Foro
@@ -165,7 +164,7 @@ SOLICITANTE:
 Obs: para fins de teste, podemos fazer o recorder clicar em Fechar. Assim ele acha o footer corretamente e seria só atualizar o id para Salvar depois.
 
 ==============================
-[ETAPA-11] FLUXOGRAMA SIGAD - ENCAMINHAR: $\green ✔$
+[ETAPA-11] FLUXOGRAMA SIGAD - ENCAMINHAR:  $\green ✔$
 ==============================
 1. Retorno ao sigad
 2. Ir para Detalhes do Serviço, Fases e clicar em Encaminhar

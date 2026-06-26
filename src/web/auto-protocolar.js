@@ -6,12 +6,15 @@ const fs       = require('fs');
 const path     = require('path');
 const pdfParse = require('pdf-parse');
 const { abrirBrowser } = require('./crawler');
+const { fazerLogin }   = require('./auth');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
-const SIGAD_INICIO_URL  = 'https://sistemas.vcpericia.com.br/sigad/inicio/index.xhtml';
-const EXTRACAO_FILE     = path.resolve(__dirname, '../../data/extracao-protocolo.json');
-const TRABALHOS_FINAIS  = process.env.TRABALHOS_FINAIS
+const SIGAD_LOGIN_URL  = 'https://sistemas.vcpericia.com.br/sigad/';
+const SIGAD_INICIO_URL = 'https://sistemas.vcpericia.com.br/sigad/inicio/index.xhtml';
+const ESAJ_LOGIN_URL   = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
+const EXTRACAO_FILE    = path.resolve(__dirname, '../../data/extracao-protocolo.json');
+const TRABALHOS_FINAIS = process.env.TRABALHOS_FINAIS;
 
 const ENCAMINHAR_NOME = 'Dayane Franco Alves';
 
@@ -51,6 +54,36 @@ async function aguardarAjax(page) {
     () => typeof window.PrimeFaces === 'undefined' || window.PrimeFaces.ajax.Queue.isEmpty(),
     { timeout: 15000 }
   ).catch(() => {});
+}
+
+// ── Login ESAJ (certificado digital) ─────────────────────────────────────────
+
+function esajSessaoExpirada(page) {
+  const url = page.url();
+  return url.includes('esaj.tjms.jus.br') &&
+    (url.includes('sajcas') || url.includes('/login') || url.includes('sessionExpired'));
+}
+
+async function loginEsaj(context, pageExistente = null) {
+  const page        = pageExistente ?? await context.newPage();
+  const fecharAoFim = !pageExistente;
+  try {
+    await page.goto(ESAJ_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    if (!esajSessaoExpirada(page)) { console.log('[esaj] Já autenticado.'); return true; }
+    await page.locator('#linkAbaCertificado').click();
+    console.log('[esaj] Aguardando seleção de certificado (5s)...');
+    await new Promise(r => setTimeout(r, 5000));
+    await page.locator('#submitCertificado').click();
+    await page.waitForFunction(
+      () => !window.location.href.includes('sajcas') && !window.location.href.includes('/login'),
+      { timeout: 10000 }
+    ).catch(() => console.warn('[esaj] Timeout aguardando pós-login.'));
+    const logado = !esajSessaoExpirada(page);
+    console.log(logado ? '[esaj] Login confirmado.' : '[esaj] Login não confirmado.');
+    return logado;
+  } finally {
+    if (fecharAoFim) await page.close();
+  }
 }
 
 // "doc1 // doc2" → ['doc1', 'doc2']  (doc2 é sempre Alvará quando presente)
@@ -166,12 +199,13 @@ async function abrirProcessoNoESAJ(page, context) {
   await page.locator(SEL.TAB_DADOS).click();
   await aguardarAjax(page);
 
-  // Processo: span sem ID/classe — identificado pelo formato do número
   const linkProcesso = page
     .locator('[id="formDlgVerServico"] span')
     .filter({ hasText: /\d{7}-\d{2}\.\d{4}\.\d+\.\d+\.\d{4}/ })
     .first();
 
+  const numeroProcesso = (await linkProcesso.textContent()).trim();
+  console.log(`[etapa-4] Processo: ${numeroProcesso}`);
   console.log('[etapa-4] Clicando no processo...');
   const [esajAba] = await Promise.all([
     context.waitForEvent('page', { timeout: 15000 }),
@@ -180,7 +214,29 @@ async function abrirProcessoNoESAJ(page, context) {
 
   await esajAba.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
   console.log(`[etapa-4] ESAJ aberto: ${esajAba.url()}`);
-  return esajAba;
+
+  // Re-autentica ESAJ se a sessão expirou
+  if (esajSessaoExpirada(esajAba)) {
+    console.warn('[etapa-4] Sessão ESAJ expirada — re-autenticando...');
+    await loginEsaj(context);
+    await esajAba.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  }
+
+  // Aguarda carregamento completo do processo (#linkPasta só aparece após o search.do processar)
+  const linkPasta = esajAba.locator('#linkPasta');
+  let linkPastaVisivel = await linkPasta.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
+  for (let t = 1; t <= 3 && !linkPastaVisivel; t++) {
+    console.warn(`[etapa-4] #linkPasta não visível (tentativa ${t}/3 — reCAPTCHA?). Aguardando 2s...`);
+    await esajAba.waitForTimeout(2000);
+    linkPastaVisivel = await linkPasta.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+  }
+
+  if (!linkPastaVisivel) {
+    throw new Error('[etapa-4] ESAJ não carregou o processo após 3 tentativas (reCAPTCHA ou processo não encontrado).');
+  }
+
+  console.log(`[etapa-4] Processo carregado: ${esajAba.url()}`);
+  return { esajAba, numeroProcesso };
 }
 
 // ── Etapa 5: Localizar pasta do serviço no servidor ──────────────────────────
@@ -212,7 +268,7 @@ function localizarPastaServico(servico) {
   return { pastaServico, pastaRecente: maisRecente.path };
 }
 
-// ── Etapa 6: Extrair cabeçalho da 1ª página do PDF ───────────────────────────
+// ── Etapa 5b: Extrair cabeçalho da 1ª página do PDF ─────────────────────────
 
 async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   const nomeLower = nomeDocumento.toLowerCase();
@@ -221,11 +277,11 @@ async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   );
 
   if (!arquivo) {
-    throw new Error(`[etapa-6] PDF não encontrado para "${nomeDocumento}" em ${pastaRecente}`);
+    throw new Error(`[etapa-5] PDF não encontrado para "${nomeDocumento}" em ${pastaRecente}`);
   }
 
   const caminho = path.join(pastaRecente, arquivo);
-  console.log(`[etapa-6] Lendo PDF: ${caminho}`);
+  console.log(`[etapa-5] Lendo PDF: ${caminho}`);
 
   const buffer = fs.readFileSync(caminho);
   const { text } = await pdfParse(buffer, { max: 1 }); // apenas 1ª página
@@ -246,8 +302,215 @@ async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
     arquivo,
   };
 
-  console.log('[etapa-6] Cabeçalho:', JSON.stringify(cabecalho, null, 2));
+  console.log('[etapa-5] Cabeçalho do documento:', JSON.stringify(cabecalho, null, 2));
   return cabecalho;
+}
+
+// ── Etapa 6: Partes e cabeçalho do ESAJ ──────────────────────────────────────
+
+function classificarRoleESAJ(labelRaw) {
+  const l = labelRaw
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[.:*]/g, '')
+    .trim()
+    .toUpperCase();
+
+  const AUTOR = [
+    /^AUTOR[A]?$/,
+    /^EXEQ/,
+    /^REQ(T|NT|UER)/,
+    /^RECLAM(T|ANT)/,
+    /^EMBARG(T|ANT|ANTE|UE)/,
+    /^IMPET(T|RANT)/,
+    /^LIQ(T|ANT|UIDAN)/,
+    /^INV(ANT|ARIAN)/,
+    /^IMPUGN(T|ANT|ANTE)/,
+    /^RECONVINT/,
+  ];
+
+  const REU = [
+    /^(REU|RE)$/,
+    /^EXEC(T|UT)/,
+    /^REQ(D|ERID)/,
+    /^RECLAM(D|AD)/,
+    /^EMBARG(D|AD)/,
+    /^IMPETR(D|AD)/,
+    /^LIQ(D|UID)/,
+    /^INV(AD|ENTARIAD)/,
+    /^IMPUGN(D|AD)/,
+    /^RECONVIND/,
+  ];
+
+  for (const re of AUTOR) { if (re.test(l)) return 'AUTOR'; }
+  for (const re of REU)   { if (re.test(l)) return 'RÉU'; }
+  return null;
+}
+
+async function extrairPartesDoESAJ(esajPage) {
+  const dadosBrutos = await esajPage.evaluate(() => {
+    function extrairLinhasDaTabela(tabela) {
+      const linhas = [];
+      for (const tr of tabela.querySelectorAll('tr')) {
+        if (tr.id === 'trPartesMais') continue;
+        const tds = [...tr.querySelectorAll('td')];
+        if (tds.length < 2) continue;
+        const label = tds[0].textContent.trim().replace(/:$/, '').trim();
+        if (!label) continue;
+        const primeiraLinha = tds[1].innerHTML
+          .split(/<br\s*\/?>/i)[0]
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        linhas.push({ label, nome: primeiraLinha });
+      }
+      return linhas;
+    }
+
+    const tabelaPrincipal = document.getElementById('tablePartesPrincipais');
+    const tabelaCompleta  = document.getElementById('tableTodasPartes');
+    return {
+      linhasPrincipais: tabelaPrincipal ? extrairLinhasDaTabela(tabelaPrincipal) : null,
+      linhasCompletas:  tabelaCompleta  ? extrairLinhasDaTabela(tabelaCompleta)  : null,
+    };
+  });
+
+  const { linhasPrincipais, linhasCompletas } = dadosBrutos;
+  console.log(`[etapa-6][partes] tableTodasPartes ${linhasCompletas ? 'presente' : 'ausente'}.`);
+
+  if (!linhasPrincipais) {
+    console.warn('[etapa-6][partes] #tablePartesPrincipais não encontrada.');
+    return [];
+  }
+
+  const contagemCompleta = new Map();
+  if (linhasCompletas) {
+    for (const { label } of linhasCompletas) {
+      const labelNorm = label.replace(/[.:]$/, '').trim();
+      if (/^Advogad[ao]s?$/i.test(labelNorm)) continue;
+      const role = classificarRoleESAJ(labelNorm);
+      if (!role) continue;
+      contagemCompleta.set(role, (contagemCompleta.get(role) ?? 0) + 1);
+    }
+  }
+
+  const porRole = new Map();
+  for (const { label, nome } of linhasPrincipais) {
+    const labelNorm = label.replace(/[.:]$/, '').trim();
+    if (/^Advogad[ao]s?$/i.test(labelNorm)) continue;
+    const role = classificarRoleESAJ(labelNorm);
+    if (!role) continue;
+    if (porRole.has(role)) continue;
+    const nomeMaiusc = nome.toUpperCase().trim();
+    if (!nomeMaiusc || /^SEM\s/i.test(nomeMaiusc)) continue;
+    porRole.set(role, nomeMaiusc);
+  }
+
+  const partes = [];
+  for (const [participacao, nome] of porRole) {
+    const total = contagemCompleta.get(participacao) ?? 0;
+    const sufixo = total > 1 ? ' E OUTROS' : '';
+    partes.push({ participacao, nome: nome + sufixo });
+  }
+
+  return partes;
+}
+
+async function extrairCabecalhoDoESAJ(esajPage, numeroProcesso) {
+  const dados = await esajPage.evaluate(() => {
+    function porLabel(textoLabel) {
+      for (const th of document.querySelectorAll('th, td.nomezinho, .label')) {
+        const texto = th.textContent.trim().replace(/:$/, '').trim();
+        if (texto.toLowerCase() === textoLabel.toLowerCase()) {
+          const next = th.nextElementSibling;
+          return next ? next.textContent.trim().replace(/\s+/g, ' ') : '';
+        }
+      }
+      return '';
+    }
+
+    const classeEl = document.getElementById('classeProcesso');
+    const foroEl   = document.getElementById('foroProcesso');
+    const varaEl   = document.getElementById('varaProcesso');
+
+    return {
+      classe: (classeEl?.textContent.trim() || porLabel('Classe')).replace(/\s+/g, ' '),
+      foro:   (foroEl?.textContent.trim()   || porLabel('Foro')).replace(/\s+/g, ' '),
+      vara:   (varaEl?.textContent.trim()   || porLabel('Vara')).replace(/\s+/g, ' '),
+    };
+  });
+
+  return {
+    numeroProcesso: numeroProcesso.toUpperCase(),
+    classe:         dados.classe.toUpperCase(),
+    foro:           dados.foro.toUpperCase(),
+    vara:           dados.vara.toUpperCase(),
+  };
+}
+
+// ── Etapa 7: Conferir dados do documento × ESAJ ──────────────────────────────
+
+function normalizar(str) {
+  if (!str) return '';
+  return str
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove acentos
+    .toUpperCase()
+    .replace(/\/[A-Z]{2,3}\.?\s*$/, '')  // remove /MS. /MT. /SP. no final (foro)
+    .replace(/\//g, ' ')                  // barras restantes → espaço
+    .replace(/[.,]/g, '')                 // remove pontuação
+    .replace(/\b0+(\d+[ªº°])/g, '$1')    // 02ª → 2ª (apenas ordinais, não afeta n° processo)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function camposBatem(docVal, esajVal) {
+  const d = normalizar(docVal);
+  const e = normalizar(esajVal);
+  if (!d && !e) return true;
+  return d === e;
+}
+
+function nomesBatem(docVal, esajVal) {
+  const d = normalizar(docVal);
+  const e = normalizar(esajVal);
+  if (!d && !e) return true;
+  if (d === e) return true;
+  // Leniência para "E OUTROS": compara apenas o primeiro nome
+  const baseD = d.replace(/\s+E OUTROS$/, '').trim();
+  const baseE = e.replace(/\s+E OUTROS$/, '').trim();
+  return baseD === baseE;
+}
+
+function conferirEtapa7(cabecalhoDoc, esaj) {
+  const { partes, cabecalho: esajCab } = esaj;
+
+  const autorESAJ = partes.find(p => p.participacao === 'AUTOR')?.nome ?? '';
+  const reuESAJ   = partes.find(p => p.participacao === 'RÉU')?.nome   ?? '';
+
+  const campos = [
+    { campo: 'vara',     doc: cabecalhoDoc.vara,     esaj: esajCab.vara,           fn: camposBatem },
+    { campo: 'foro',     doc: cabecalhoDoc.foro,     esaj: esajCab.foro,           fn: camposBatem },
+    { campo: 'processo', doc: cabecalhoDoc.processo, esaj: esajCab.numeroProcesso, fn: camposBatem },
+    { campo: 'classe',   doc: cabecalhoDoc.classe,   esaj: esajCab.classe,         fn: camposBatem },
+    { campo: 'autor',    doc: cabecalhoDoc.reqte,    esaj: autorESAJ,              fn: nomesBatem  },
+    { campo: 'reu',      doc: cabecalhoDoc.reqdo,    esaj: reuESAJ,                fn: nomesBatem  },
+  ];
+
+  const resultado = campos.map(({ campo, doc, esaj, fn }) => ({
+    campo,
+    doc:  doc  ?? '',
+    esaj: esaj ?? '',
+    bate: fn(doc, esaj),
+  }));
+
+  const ok = resultado.every(r => r.bate);
+
+  console.log(`[etapa-7] Conferencia: ${ok ? '[OK]' : '[FALHA]'}`);
+  for (const r of resultado) {
+    console.log(`  [${r.bate ? 'OK' : 'XX'}] ${r.campo.padEnd(9)}: doc="${r.doc}" | esaj="${r.esaj}"`);
+  }
+
+  return { ok, campos: resultado };
 }
 
 // ── Etapa 11: Encaminhar ──────────────────────────────────────────────────────
@@ -332,27 +595,48 @@ async function processarServico(page, context) {
   console.log('[etapa-3] Documentos conferem. Prosseguindo para etapa 4...');
 
   // Etapa 4 — Dados Básicos → ESAJ
-  const esajAba = await abrirProcessoNoESAJ(page, context);
+  const { esajAba, numeroProcesso } = await abrirProcessoNoESAJ(page, context);
   extracao.processoUrl = esajAba.url();
+  extracao.numeroProcesso = numeroProcesso;
   salvarExtracao(extracao);
 
-  // Etapa 5 — Localizar pasta do serviço no servidor (independente do ESAJ)
+  // Etapa 5 — Localizar pasta e extrair cabeçalho do PDF
   const { pastaServico, pastaRecente } = localizarPastaServico(extracao.servico);
   extracao.pasta = { servico: pastaServico, recente: pastaRecente };
-  salvarExtracao(extracao);
-
-  // Etapa 6 — Extrair cabeçalho da 1ª página do PDF (documentosEsperados[0] = não é alvará)
   const cabecalhoDoc = await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[0]);
   extracao.cabecalhoDoc = cabecalhoDoc;
   salvarExtracao(extracao);
 
-  // TODO: Etapas 7-10 — comparação ESAJ × documento e protocolo
+  // Etapa 6 — Extrair partes e cabeçalho do ESAJ
+  console.log('[etapa-6] Extraindo partes e cabeçalho do ESAJ...');
+  const [partesESAJ, cabecalhoESAJ] = await Promise.all([
+    extrairPartesDoESAJ(esajAba),
+    extrairCabecalhoDoESAJ(esajAba, numeroProcesso),
+  ]);
+  extracao.esaj = { partes: partesESAJ, cabecalho: cabecalhoESAJ };
+  salvarExtracao(extracao);
+  console.log(`[etapa-6] Partes: ${JSON.stringify(partesESAJ)}`);
+  console.log(`[etapa-6] Cabeçalho ESAJ: ${JSON.stringify(cabecalhoESAJ)}`);
+
+  // Etapa 7 — Conferir dados do documento com ESAJ
+  const conferencia = conferirEtapa7(extracao.cabecalhoDoc, extracao.esaj);
+  extracao.conferencia = conferencia;
+  salvarExtracao(extracao);
 
   // Fecha a aba ESAJ e retorna foco ao SIGAD
   await esajAba.close();
   await page.bringToFront();
 
-  // TODO: Etapa 11 — Encaminhar (aguardando Etapas 6-10)
+  if (!conferencia.ok) {
+    console.warn('[etapa-7] Dados divergem — encaminhamento suspenso.');
+    return { ok: false, motivo: 'dados divergem entre documento e ESAJ', ...extracao };
+  }
+
+  console.log('[etapa-7] Dados conferem. Prosseguindo para etapa 11...');
+
+  // TODO: Etapas 8-10 — protocolo
+
+  // TODO: Etapa 11 — Encaminhar
   // await encaminharServico(page, {
   //   nome: ENCAMINHAR_NOME,
   //   observacao: fases.observacao,
@@ -360,7 +644,7 @@ async function processarServico(page, context) {
   // extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'AGUARDAR PROTOCOLO', observacao: fases.observacao };
   // salvarExtracao(extracao);
 
-  return { ok: true, ...extracao, esajAba };
+  return { ok: true, ...extracao };
 }
 
 // ── Fluxo principal ───────────────────────────────────────────────────────────
@@ -370,7 +654,23 @@ async function main() {
   const page = context.pages()[0] ?? await context.newPage();
 
   try {
-    await page.goto(SIGAD_INICIO_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // 1. Login ESAJ (certificado) — necessário antes de qualquer consulta ao ESAJ
+    console.log('[auto-protocolar] Verificando sessão ESAJ...');
+    await loginEsaj(context, page);
+
+    // 2. Login SIGAD
+    console.log('[auto-protocolar] Verificando sessão SIGAD...');
+    await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+    const jaLogado = await page.locator('span.menuitem-text:has-text("Painéis")').isVisible().catch(() => false);
+    if (!jaLogado) {
+      console.log('[auto-protocolar] Sessão SIGAD expirada — realizando login...');
+      await fazerLogin(page, context);
+    } else {
+      console.log('[auto-protocolar] Sessão SIGAD ativa.');
+    }
+
+    // 3. Navega para a página inicial do SIGAD
+    await page.goto(SIGAD_INICIO_URL, { waitUntil: 'load', timeout: 30000 });
     await aguardarAjax(page);
     console.log(`[auto-protocolar] Página inicial: ${page.url()}`);
 
