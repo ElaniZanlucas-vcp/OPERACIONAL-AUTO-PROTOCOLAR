@@ -531,9 +531,9 @@ function conferirEtapa7(cabecalhoDoc, esaj) {
 //     ``,
 //     ...linhas,
 //     ``,
-//     `Por favor, verifique e corrija o documento. Após a correção, reprocessaremos automaticamente.`,
+//     `Por favor, verifique e corrija o documento. Após a correção, reprocessaremos novamente.`,
 //     ``,
-//     `Obrigada!`,
+//     `Atenciosamente, CLÁUDIO INÁCIO ANTÔNIO`,
 //   ].join('\n');
 // }
 
@@ -664,10 +664,10 @@ async function preencherDadosPeticao(esajAba, codigo) {
   if (await cancelBtn.count() > 0) {
     await cancelBtn.first().click();
   }
-  console.log('[etapa-8] Peticionante ÉRIKA selecionada.');
+  console.log('[etapa-9] Peticionante ÉRIKA selecionada.');
 
   // 2. CLASSIFICAÇÃO — sem arquivo ainda, não há sugestão; "Classificar" visível normalmente
-  console.log('[etapa-8] Classificação...');
+  console.log('[etapa-9] Classificação...');
   await esajAba.locator('span.va-m:has-text("Classificar")')
     .waitFor({ state: 'visible', timeout: 15000 });
   await esajAba.locator('span.va-m:has-text("Classificar")').click();
@@ -679,16 +679,33 @@ async function preencherDadosPeticao(esajAba, codigo) {
   const opcaoCodigo = esajAba.locator('span.selecao-classe--nome').filter({ hasText: String(codigo) });
   await opcaoCodigo.waitFor({ state: 'visible', timeout: 8000 });
   await opcaoCodigo.first().click();
-  await esajAba.locator('span.glyph.glyph-chevron-up').click();
-  console.log(`[etapa-8] Classificação ${codigo} selecionada.`);
+  await esajAba.locator('span.glyph.glyph-chevron-up').first().click();
+  console.log(`[etapa-9] Classificação ${codigo} selecionada.`);
 
-  // 3. SOLICITANTE: clicar em "Incluir parte" no card da empresa (identificado pelo CNPJ)
-  console.log('[etapa-8] Solicitante...');
+  // 3. SOLICITANTE: se já constar nas partes do processo → "Incluir parte" no card;
+  //    caso contrário → formulário "Adicionar solicitante" com CNPJ
+  console.log('[etapa-9] Solicitante...');
   const cardSolicitante = esajAba.locator('[id^="cardParte_"]').filter({ hasText: '01.088.089/0001-52' });
-  await cardSolicitante.waitFor({ state: 'visible', timeout: 10000 });
-  await cardSolicitante.locator('.botao-incluir-polo').click();
+  const cardEncontrado  = await cardSolicitante.count() > 0;
+  if (cardEncontrado) {
+    await cardSolicitante.first().locator('.botao-incluir-polo').click();
+    console.log('[etapa-9] Solicitante: encontrado na tabela → Incluir parte.');
+  } else {
+    await esajAba.locator('span.va-m:has-text("Adicionar solicitante")')
+      .waitFor({ state: 'visible', timeout: 10000 });
+    await esajAba.locator('span.va-m:has-text("Adicionar solicitante")').click();
+    await esajAba.locator('label:has-text("Jurídica")').waitFor({ state: 'visible', timeout: 5000 });
+    await esajAba.locator('label:has-text("Jurídica")').click();
+    await esajAba.locator('#inputCnpj').waitFor({ state: 'visible', timeout: 5000 });
+    await esajAba.locator('#inputCnpj').click();
+    await esajAba.locator('#inputCnpj').pressSequentially('01088089000152', { delay: 80 });
+    await esajAba.locator('body').click({ position: { x: 0, y: 0 } });
+    await new Promise(r => setTimeout(r, 4000));
+    await esajAba.locator('span.glyph.glyph-chevron-up').last().click();
+    console.log('[etapa-9] Solicitante: não encontrado → adicionado por CNPJ.');
+  }
 
-  console.log('[etapa-8] Dados preenchidos.');
+  console.log('[etapa-9] Dados preenchidos.');
 }
 
 
@@ -706,39 +723,43 @@ async function importarDocumentoESAJ(esajAba, filePath) {
   console.log('[etapa-9] Arquivo carregado.');
 }
 
-async function peticionarNoESAJ(esajAba, { pastaRecente, documentosEsperados, temAlvara, fase, subfase }) {
+async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, documentosEsperados, temAlvara, fase, subfase }) {
   const codigo = resolverCodigoClassificacao(fase, subfase);
-  console.log(`[peticionar] Fase: ${fase} | Subfase: ${subfase} | Código: ${codigo}`);
-
-  const docs = temAlvara && documentosEsperados.length > 1
+  const docs   = temAlvara && documentosEsperados.length > 1
     ? [documentosEsperados[0], documentosEsperados[1]]
     : [documentosEsperados[0]];
+  const codigos = [codigo, 38380];
+
+  console.log(`[peticionar] Fase: ${fase} | Subfase: ${subfase} | Código: ${codigo} | Total docs: ${docs.length}`);
+
+  let abaAtual = esajAba;
 
   for (let i = 0; i < docs.length; i++) {
-    const docName  = docs[i];
-    const ehAlvara = i > 0;
-    const codigoDoc = ehAlvara ? 38380 : codigo;
-    const filePath  = path.join(pastaRecente, docName + '.pdf');
+    const label = i === 0 ? 'Documento principal' : 'Alvará';
 
-    console.log(`\n[peticionar] ${i + 1}/${docs.length} — ${ehAlvara ? 'Alvará' : 'Documento principal'} (${docName})`);
-
-    await abrirFormularioPeticao(esajAba);            // clica Peticionar → abre formulário
-    await preencherDadosPeticao(esajAba, codigoDoc);  // PETICIONANTE → CLASSIFICAÇÃO → SOLICITANTE
-    await importarDocumentoESAJ(esajAba, filePath);   // upload do arquivo
-
-    const ultimoDoc = i === docs.length - 1;
-    if (!ultimoDoc) {
-      console.log('[etapa-10] Redirecionando para capa do processo (loop Alvará)...');
-      await esajAba.locator('span.numeroProcesso').first().click();
-      await esajAba.locator('#dropdownCriarPeticaoInicial').waitFor({ state: 'visible', timeout: 15000 });
-      console.log('[etapa-10] Capa carregada — iniciando loop Alvará.');
-    } else {
-      console.log('[etapa-10] Aguardando 10s antes de fechar (modo teste)...');
-      await new Promise(r => setTimeout(r, 10000));
-      await esajAba.locator('#botaoVoltarListagemConsulta').click();
-      await esajAba.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-      console.log('[etapa-10] Formulário fechado.');
+    if (i > 0) {
+      // Volta ao SIGAD e reabre o processo no ESAJ pela mesma rota da Etapa 4
+      console.log('[peticionar] Retornando ao SIGAD para abrir processo novamente (Alvará)...');
+      await page.bringToFront();
+      ({ esajAba: abaAtual } = await abrirProcessoNoESAJ(page, context));
     }
+
+    console.log(`\n[peticionar] ${i + 1}/${docs.length} — ${label} (${docs[i]})`);
+    const filePath = path.join(pastaRecente, docs[i] + '.pdf');
+
+    await abrirFormularioPeticao(abaAtual);
+    await preencherDadosPeticao(abaAtual, codigos[i]);
+    await importarDocumentoESAJ(abaAtual, filePath);
+
+    console.log(`[etapa-10] Aguardando 10s (modo teste — ${label})...`);
+    await new Promise(r => setTimeout(r, 10000));
+    await abaAtual.locator('#botaoVoltarListagemConsulta').click();
+    await abaAtual.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    console.log(`[etapa-10] ${label}: Fechar clicado.`);
+
+    await abaAtual.close();
+    await page.bringToFront();
+    console.log(`[etapa-10] ${label}: Aba ESAJ fechada. Foco no SIGAD.`);
   }
 }
 
@@ -815,8 +836,8 @@ async function processarServico(page, context) {
 
   console.log('[etapa-7] Dados conferem. Prosseguindo para Etapas 8-10 (peticionar)...');
 
-  // Etapas 8-10 — protocolo no ESAJ (aba ainda aberta)
-  await peticionarNoESAJ(esajAba, {
+  // Etapas 8-10 — protocolo no ESAJ; peticionarNoESAJ fecha cada aba ao fim
+  await peticionarNoESAJ(esajAba, page, context, {
     pastaRecente:        extracao.pasta.recente,
     documentosEsperados: fases.documentosEsperados,
     temAlvara:           fases.temAlvara,
@@ -825,10 +846,6 @@ async function processarServico(page, context) {
   });
   extracao.peticao = { ok: true };
   salvarExtracao(extracao);
-
-  // Fecha a aba ESAJ e retorna foco ao SIGAD
-  await esajAba.close();
-  await page.bringToFront();
 
   // TODO: Etapa 11 — Encaminhar
   // await encaminharServico(page, {

@@ -21,8 +21,8 @@ FLUXOGRAMA:
 6. Extrair Partes do Processo e o Cabeçalho no esaj $\green ✔$
 [Loop Alvará]
 7. Conferência das Partes do Processo c/ Cabeçalho do Documento e Peticionar $\orange {apenas caso positivo}$
-8. Preencher Dados da Petição 
-9. Importação de documento $\green ✔$
+8. Importação de documento $\green ✔$
+9. Preencher Dados da Petição 
 10. Salvar para protocolar depois (add condicional de Alvará p/ clicar no Processo e Peticionar - minilooping caso tenha Alvará)
 [Fim Loop Alvará]
 11. Retorno ao sigad: Encaminhar $\green ✔$
