@@ -1,6 +1,19 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
+0. ajustar o Fechar para Salvar para Peticionar Depois -> mudar id
+
+1. Caso Fase e Doc não batam:
+    - Finalizar o fluxo e retornar uma mensagem de aviso.json
+
+2. Caso Doc e esaj não batam:
+    - Armazenar o Serviço, Processo, Divergências, Responsável e iterar para o próximo
+    - Ao final do fluxo, retornar em forma de mensagem as divergências separadas por Responsável
+    - Ou seja, se um Responsável possuir > 1 divergência, será retornado na mesma mensagem, mas com as divisões bem estabelecidas para não haver confusão.
+
+3. Fazer o loop para iteração, adicionando a Exceção de Serviço 26872
+
+
 $\green ✔$
 - ideia: fazer um recorder.js para cada fluxograma, assim conseguimos evoluir gradualmente como foi feito para a automação do Sigad
 - criar fluxos das etapas do loop

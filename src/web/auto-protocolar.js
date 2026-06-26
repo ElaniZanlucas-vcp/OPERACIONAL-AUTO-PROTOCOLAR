@@ -643,10 +643,10 @@ async function abrirFormularioPeticao(esajAba) {
 }
 
 async function preencherDadosPeticao(esajAba, codigo) {
-  console.log('[etapa-8] Preenchendo dados da petição...');
+  console.log('[etapa-9] Preenchendo dados da petição...');
 
   // 1. PETICIONANTE — abrir dropdown → digitar → selecionar ÉRIKA → remover tag anterior
-  console.log('[etapa-8] Peticionante...');
+  console.log('[etapa-9] Peticionante...');
   const tagExistente = esajAba.locator('span.ui-select-match-text.pull-left').first();
   if (await tagExistente.isVisible()) {
     await tagExistente.click();
@@ -666,21 +666,31 @@ async function preencherDadosPeticao(esajAba, codigo) {
   }
   console.log('[etapa-9] Peticionante ÉRIKA selecionada.');
 
-  // 2. CLASSIFICAÇÃO — sem arquivo ainda, não há sugestão; "Classificar" visível normalmente
+  // 2. CLASSIFICAÇÃO — rejeita sugestão (se houver) e digita o código sempre
   console.log('[etapa-9] Classificação...');
-  await esajAba.locator('span.va-m:has-text("Classificar")')
-    .waitFor({ state: 'visible', timeout: 15000 });
+  const blocoClassificacao = esajAba.locator('#blocoClassificacao');
+  await blocoClassificacao.waitFor({ state: 'visible', timeout: 15000 });
+
+  const btnRejeitar = blocoClassificacao.locator('#containerClassificacaoSugestao #botaoRejeitarClassificacao');
+  const temSugestao = await btnRejeitar.waitFor({ state: 'visible', timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  if (temSugestao) {
+    console.log('[etapa-9] Sugestão detectada → rejeitando...');
+    await btnRejeitar.click();
+  }
+
+  await esajAba.locator('span.va-m:has-text("Classificar")').waitFor({ state: 'visible', timeout: 10000 });
   await esajAba.locator('span.va-m:has-text("Classificar")').click();
   await esajAba.locator('span.ui-select-placeholder.text-muted:not(.ng-hide)')
     .waitFor({ state: 'visible', timeout: 5000 });
   await esajAba.locator('span.ui-select-placeholder.text-muted:not(.ng-hide)').click();
-  await esajAba.locator('#selectClasseIntermediaria')
-    .pressSequentially(String(codigo), { delay: 80 });
+  await esajAba.locator('#selectClasseIntermediaria').pressSequentially(String(codigo), { delay: 80 });
   const opcaoCodigo = esajAba.locator('span.selecao-classe--nome').filter({ hasText: String(codigo) });
   await opcaoCodigo.waitFor({ state: 'visible', timeout: 8000 });
   await opcaoCodigo.first().click();
   await esajAba.locator('span.glyph.glyph-chevron-up').first().click();
-  console.log(`[etapa-9] Classificação ${codigo} selecionada.`);
+  console.log(`[etapa-9] Classificação ${codigo} definida.`);
 
   // 3. SOLICITANTE: se já constar nas partes do processo → "Incluir parte" no card;
   //    caso contrário → formulário "Adicionar solicitante" com CNPJ
@@ -710,7 +720,7 @@ async function preencherDadosPeticao(esajAba, codigo) {
 
 
 async function importarDocumentoESAJ(esajAba, filePath) {
-  console.log(`[etapa-9] Enviando arquivo: ${path.basename(filePath)}`);
+  console.log(`[etapa-8] Enviando arquivo: ${path.basename(filePath)}`);
   // Dois botões com id "botaoAdicionarDocumento" — diferencia por aria-label
   const btnDoc = esajAba.locator('[aria-label="Adicionar arquivos elaborados"]');
   await btnDoc.waitFor({ state: 'visible', timeout: 10000 });
@@ -720,7 +730,49 @@ async function importarDocumentoESAJ(esajAba, filePath) {
   ]);
   await fileChooser.setFiles(filePath);
   await new Promise(r => setTimeout(r, 3000));
-  console.log('[etapa-9] Arquivo carregado.');
+  console.log('[etapa-8] Arquivo carregado.');
+}
+
+async function tratarSugestaoClassificacao(aba, codigoEsperado) {
+  // Aguarda o AJAX de análise do arquivo completar
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Detecta sugestão pela presença do botão ✔ (glyph-ok) dentro de selecao-classe
+  const btnAceitar  = aba.locator('selecao-classe span.glyph.glyph-ok');
+  const btnRejeitar = aba.locator('selecao-classe span.glyph.glyph-remove');
+  const temSugestao = await btnAceitar.count() > 0;
+
+  if (!temSugestao) {
+    console.log('[etapa-8] Sem sugestão de classificação após upload.');
+    return;
+  }
+
+  // Lê o código sugerido pelo texto "NNNN - Descrição"
+  const nomeSugestao   = await aba.locator('selecao-classe span.selecao-classe--nome').textContent().catch(() => '');
+  const codigoSugerido = nomeSugestao.match(/^(\d+)/)?.[1];
+  console.log(`[etapa-8] Sugestão detectada: "${nomeSugestao.trim()}" | Esperado: ${codigoEsperado}`);
+
+  if (codigoSugerido === String(codigoEsperado)) {
+    console.log('[etapa-8] Sugestão correta → aceitando (✔)...');
+    await btnAceitar.first().click();
+    await aba.locator('span.glyph.glyph-chevron-up').first().click();
+  } else {
+    console.log('[etapa-8] Sugestão incorreta → rejeitando (X) e re-selecionando...');
+    await btnRejeitar.first().click();
+    // Após rejeitar, "Classificar" volta a ficar visível
+    await aba.locator('span.va-m:has-text("Classificar")').waitFor({ state: 'visible', timeout: 10000 });
+    await aba.locator('span.va-m:has-text("Classificar")').click();
+    await aba.locator('span.ui-select-placeholder.text-muted:not(.ng-hide)')
+      .waitFor({ state: 'visible', timeout: 5000 });
+    await aba.locator('span.ui-select-placeholder.text-muted:not(.ng-hide)').click();
+    await aba.locator('#selectClasseIntermediaria')
+      .pressSequentially(String(codigoEsperado), { delay: 80 });
+    const opcao = aba.locator('span.selecao-classe--nome').filter({ hasText: String(codigoEsperado) });
+    await opcao.waitFor({ state: 'visible', timeout: 8000 });
+    await opcao.first().click();
+    await aba.locator('span.glyph.glyph-chevron-up').first().click();
+    console.log(`[etapa-8] Classificação ${codigoEsperado} re-selecionada.`);
+  }
 }
 
 async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, documentosEsperados, temAlvara, fase, subfase }) {
@@ -748,8 +800,8 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
     const filePath = path.join(pastaRecente, docs[i] + '.pdf');
 
     await abrirFormularioPeticao(abaAtual);
-    await preencherDadosPeticao(abaAtual, codigos[i]);
     await importarDocumentoESAJ(abaAtual, filePath);
+    await preencherDadosPeticao(abaAtual, codigos[i]);
 
     console.log(`[etapa-10] Aguardando 10s (modo teste — ${label})...`);
     await new Promise(r => setTimeout(r, 10000));
@@ -916,6 +968,7 @@ module.exports = {
   resolverCodigoClassificacao,
   abrirFormularioPeticao,
   importarDocumentoESAJ,
+  tratarSugestaoClassificacao,
   preencherDadosPeticao,
   peticionarNoESAJ,
 };
