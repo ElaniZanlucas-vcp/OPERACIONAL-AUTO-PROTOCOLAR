@@ -5,14 +5,14 @@
 const fs       = require('fs');
 const path     = require('path');
 const pdfParse = require('pdf-parse');
+// const nodemailer       = require('nodemailer');
 const { abrirBrowser } = require('./crawler');
 const { fazerLogin }   = require('./auth');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
-const SIGAD_LOGIN_URL  = 'https://sistemas.vcpericia.com.br/sigad/';
-const SIGAD_INICIO_URL = 'https://sistemas.vcpericia.com.br/sigad/inicio/index.xhtml';
-const ESAJ_LOGIN_URL   = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
+const SIGAD_LOGIN_URL = 'https://sistemas.vcpericia.com.br/sigad/';
+const ESAJ_LOGIN_URL  = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
 const EXTRACAO_FILE    = path.resolve(__dirname, '../../data/extracao-protocolo.json');
 const TRABALHOS_FINAIS = process.env.TRABALHOS_FINAIS;
 
@@ -46,6 +46,7 @@ const SEL = {
   SUBFASE_PANEL:    '[id="formDlgEnviarServico:inputSubfase_panel"]',
   OBS_FASE:         '[id="formDlgEnviarServico:inputObsFase"]',
 };
+
 
 // ── Helpers Node.js ───────────────────────────────────────────────────────────
 
@@ -177,7 +178,10 @@ async function extrairDocumentos(page, temAlvara) {
 
     return [...document.querySelectorAll(seletorLinhas)]
       .slice(0, qtd)
-      .map(row => valorCelula(celulaPorTitulo(row, 'Documento')));
+      .map((row, idx) => ({
+        documento:   valorCelula(celulaPorTitulo(row, 'Documento')),
+        responsavel: idx === 0 ? valorCelula(celulaPorTitulo(row, 'Responsável')) : null,
+      }));
   }, { seletorLinhas: SEL.DOCS_LINHAS, qtd });
 
   console.log(`[etapa-3] Docs encontrados (${documentos.length}): ${JSON.stringify(documentos)}`);
@@ -188,7 +192,7 @@ async function extrairDocumentos(page, temAlvara) {
 function conferirDocumentos(esperados, encontrados) {
   if (esperados.length !== encontrados.length) return false;
   return esperados.every((esp, i) =>
-    encontrados[i]?.toLowerCase().includes(esp.toLowerCase())
+    encontrados[i]?.documento?.toLowerCase().includes(esp.toLowerCase())
   );
 }
 
@@ -513,6 +517,58 @@ function conferirEtapa7(cabecalhoDoc, esaj) {
   return { ok, campos: resultado };
 }
 
+// // ── Etapa 7.2 (negativo): Notificar divergência por e-mail ───────────────────
+
+// function montarMensagemDivergencia(servico, conferencia) {
+//   const divergentes = conferencia.campos.filter(c => !c.bate);
+//   const linhas = divergentes.map(c =>
+//     `• ${c.campo.toUpperCase()}: documento "${c.doc}" → processo "${c.esaj}"`
+//   );
+//   return [
+//     `Olá, tudo bem?`,
+//     ``,
+//     `Identificamos uma divergência no documento do Serviço ${servico} que precisa de correção antes de protocolar:`,
+//     ``,
+//     ...linhas,
+//     ``,
+//     `Por favor, verifique e corrija o documento. Após a correção, reprocessaremos automaticamente.`,
+//     ``,
+//     `Obrigada!`,
+//   ].join('\n');
+// }
+
+// async function notificarDivergencia(responsavel, conferencia, servico) {
+//   if (!responsavel) {
+//     console.warn('[etapa-7.2] Responsável não encontrado — notificação ignorada.');
+//     return;
+//   }
+
+//   const remetente  = process.env.GMAIL_USUARIO;
+//   const appPassword = process.env.GMAIL_APP_PASSWORD;
+
+//   if (!remetente || !appPassword) {
+//     console.warn('[etapa-7.2] GMAIL_USUARIO ou GMAIL_APP_PASSWORD ausentes no .env — notificação ignorada.');
+//     return;
+//   }
+
+//   const transporter = nodemailer.createTransport({
+//     service: 'gmail',
+//     auth: { user: remetente, pass: appPassword },
+//   });
+
+//   const mensagem = montarMensagemDivergencia(servico, conferencia);
+
+//   console.log(`[etapa-7.2] Enviando e-mail para "${responsavel}"...`);
+//   await transporter.sendMail({
+//     from:    remetente,
+//     to:      responsavel,
+//     subject: `[Auto-Protocolar] Divergência no Serviço ${servico}`,
+//     text:    mensagem,
+//   });
+
+//   console.log('[etapa-7.2] E-mail enviado.');
+// }
+
 // ── Etapa 11: Encaminhar ──────────────────────────────────────────────────────
 
 async function encaminharServico(page, { nome, observacao }) {
@@ -559,6 +615,94 @@ async function encaminharServico(page, { nome, observacao }) {
 
   // [SIMULAÇÃO] — não clicar no botão final de Encaminhar/Salvar
   console.log('[etapa-11][SIMULAÇÃO] Formulário preenchido — encerrado sem salvar.');
+}
+
+// ── Etapas 8-10: Protocolar no ESAJ ──────────────────────────────────────────
+
+function resolverCodigoClassificacao(fase, subfase) {
+  const f = fase.toUpperCase().trim();
+  const s = subfase.toUpperCase().trim();
+  if (s === 'PROTOCOLAR-PRAZO')  return 38423;
+  if (s.startsWith('PROTOCOLAR-')) return 8822;
+  if (s === 'PROTOCOLAR') {
+    if (f === 'LAUDO' || f === 'ESCLARECIMENTO') return 38368;
+    return 8822;
+  }
+  return null;
+}
+
+async function importarDocumentoESAJ(esajAba, filePath) {
+  console.log(`[etapa-8] Abrindo formulário de petição intermediária...`);
+  await esajAba.locator('#dropdownCriarPeticaoInicial').click();
+  await esajAba.locator('#linkPeticionar').waitFor({ state: 'visible', timeout: 5000 });
+  await esajAba.locator('#linkPeticionar').click();
+
+  // Dois botões com id "botaoAdicionarDocumento" — diferencia por aria-label
+  const btnDoc = esajAba.locator('[aria-label="Adicionar arquivos elaborados"]');
+  await btnDoc.waitFor({ state: 'visible', timeout: 15000 });
+  console.log(`[etapa-8] Enviando arquivo: ${path.basename(filePath)}`);
+
+  const [fileChooser] = await Promise.all([
+    esajAba.waitForEvent('filechooser'),
+    btnDoc.click(),
+  ]);
+  await fileChooser.setFiles(filePath);
+  await new Promise(r => setTimeout(r, 3000));
+  console.log('[etapa-8] Arquivo carregado.');
+}
+
+async function preencherDadosPeticao(esajAba, codigo) {
+  console.log('[etapa-9] Preenchendo dados da petição...');
+
+  // SOLICITANTE: selecionar pelo CNPJ da empresa
+  await esajAba.locator('li').filter({ hasText: '01.088.089/0001-52' })
+    .waitFor({ state: 'visible', timeout: 10000 });
+  await esajAba.locator('li').filter({ hasText: '01.088.089/0001-52' }).click();
+
+  // PETICIONANTE: ÉRIKA PINTO NOGUEIRA
+  await esajAba.locator('span').filter({ hasText: /ÉRIKA PINTO NOGUEIRA.*Advogad/ })
+    .first().click();
+  await esajAba.locator('span.glyph.glyph-accept').click();
+  await esajAba.locator('span.glyph.glyph-chevron-up').click();
+  await esajAba.locator('.botao-incluir-polo').click();
+
+  // TODO: CLASSIFICAÇÃO — seletores pendentes (gravar via recorder.js peticionar)
+  console.warn(`[etapa-9][TODO] CLASSIFICAÇÃO (código ${codigo}) — aguardando gravação dos seletores.`);
+}
+
+async function peticionarNoESAJ(esajAba, { pastaRecente, documentosEsperados, temAlvara, fase, subfase }) {
+  const codigo = resolverCodigoClassificacao(fase, subfase);
+  console.log(`[peticionar] Fase: ${fase} | Subfase: ${subfase} | Código: ${codigo}`);
+
+  const docs = temAlvara && documentosEsperados.length > 1
+    ? [documentosEsperados[0], documentosEsperados[1]]
+    : [documentosEsperados[0]];
+
+  for (let i = 0; i < docs.length; i++) {
+    const docName  = docs[i];
+    const ehAlvara = i > 0;
+    const codigoDoc = ehAlvara ? 38380 : codigo;
+    const filePath  = path.join(pastaRecente, docName + '.pdf');
+
+    console.log(`\n[peticionar] ${i + 1}/${docs.length} — ${ehAlvara ? 'Alvará' : 'Documento principal'} (${docName})`);
+
+    await importarDocumentoESAJ(esajAba, filePath);
+    await preencherDadosPeticao(esajAba, codigoDoc);
+
+    const ultimoDoc = i === docs.length - 1;
+    if (!ultimoDoc) {
+      console.log('[etapa-10] Redirecionando para capa do processo (loop Alvará)...');
+      await esajAba.locator('span.numeroProcesso').first().click();
+      await esajAba.locator('#dropdownCriarPeticaoInicial').waitFor({ state: 'visible', timeout: 15000 });
+      console.log('[etapa-10] Capa carregada — iniciando loop Alvará.');
+    } else {
+      console.log('[etapa-10] Aguardando 10s antes de fechar (modo teste)...');
+      await new Promise(r => setTimeout(r, 10000));
+      await esajAba.locator('#botaoVoltarListagemConsulta').click();
+      await esajAba.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      console.log('[etapa-10] Formulário fechado.');
+    }
+  }
 }
 
 // ── Fluxo por serviço ─────────────────────────────────────────────────────────
@@ -623,18 +767,31 @@ async function processarServico(page, context) {
   extracao.conferencia = conferencia;
   salvarExtracao(extracao);
 
-  // Fecha a aba ESAJ e retorna foco ao SIGAD
-  await esajAba.close();
-  await page.bringToFront();
-
   if (!conferencia.ok) {
-    console.warn('[etapa-7] Dados divergem — encaminhamento suspenso.');
+    console.warn('[etapa-7] Dados divergem — notificação por e-mail pendente (configurar GMAIL_USUARIO/GMAIL_APP_PASSWORD).');
+    // const responsavel = extracao.documentos.encontrados[0]?.responsavel ?? '';
+    // await notificarDivergencia(responsavel, conferencia, extracao.servico);
+    await esajAba.close();
+    await page.bringToFront();
     return { ok: false, motivo: 'dados divergem entre documento e ESAJ', ...extracao };
   }
 
-  console.log('[etapa-7] Dados conferem. Prosseguindo para etapa 11...');
+  console.log('[etapa-7] Dados conferem. Prosseguindo para Etapas 8-10 (peticionar)...');
 
-  // TODO: Etapas 8-10 — protocolo
+  // Etapas 8-10 — protocolo no ESAJ (aba ainda aberta)
+  await peticionarNoESAJ(esajAba, {
+    pastaRecente:        extracao.pasta.recente,
+    documentosEsperados: fases.documentosEsperados,
+    temAlvara:           fases.temAlvara,
+    fase:                fases.fase,
+    subfase:             fases.subfase,
+  });
+  extracao.peticao = { ok: true };
+  salvarExtracao(extracao);
+
+  // Fecha a aba ESAJ e retorna foco ao SIGAD
+  await esajAba.close();
+  await page.bringToFront();
 
   // TODO: Etapa 11 — Encaminhar
   // await encaminharServico(page, {
@@ -658,7 +815,7 @@ async function main() {
     console.log('[auto-protocolar] Verificando sessão ESAJ...');
     await loginEsaj(context, page);
 
-    // 2. Login SIGAD
+    // 2. Login SIGAD — redireciona para a página inicial ao concluir
     console.log('[auto-protocolar] Verificando sessão SIGAD...');
     await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
     const jaLogado = await page.locator('span.menuitem-text:has-text("Painéis")').isVisible().catch(() => false);
@@ -668,10 +825,6 @@ async function main() {
     } else {
       console.log('[auto-protocolar] Sessão SIGAD ativa.');
     }
-
-    // 3. Navega para a página inicial do SIGAD
-    await page.goto(SIGAD_INICIO_URL, { waitUntil: 'load', timeout: 30000 });
-    await aguardarAjax(page);
     console.log(`[auto-protocolar] Página inicial: ${page.url()}`);
 
     // TODO: iterar sobre todos os serviços em formServico:tabela_data
@@ -687,9 +840,27 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error('[auto-protocolar] Erro fatal:', err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('[auto-protocolar] Erro fatal:', err.message);
+    process.exit(1);
+  });
+}
 
-module.exports = { processarServico, extrairFases, extrairDocumentos, abrirProcessoNoESAJ, encaminharServico };
+module.exports = {
+  processarServico,
+  extrairFases,
+  extrairDocumentos,
+  conferirDocumentos,
+  abrirProcessoNoESAJ,
+  localizarPastaServico,
+  extrairCabecalhoDocumento,
+  extrairPartesDoESAJ,
+  extrairCabecalhoDoESAJ,
+  encaminharServico,
+  conferirEtapa7,
+  resolverCodigoClassificacao,
+  importarDocumentoESAJ,
+  preencherDadosPeticao,
+  peticionarNoESAJ,
+};

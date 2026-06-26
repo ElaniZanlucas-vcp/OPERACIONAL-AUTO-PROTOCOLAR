@@ -48,7 +48,16 @@ async function abrirBrowser() {
   // Encerra Chrome para liberar acesso exclusivo ao diretório do perfil
   try { execSync('taskkill /f /im chrome.exe',                  { stdio: 'ignore' }); } catch {}
   try { execSync('taskkill /f /im chrome_crashpad_handler.exe', { stdio: 'ignore' }); } catch {}
-  await new Promise((r) => setTimeout(r, 2000));
+
+  // Aguarda Chrome encerrar completamente antes de lançar (evita "sessão existente")
+  const tInicio = Date.now();
+  while (Date.now() - tInicio < 10000) {
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      const lista = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf8' });
+      if (!lista.toLowerCase().includes('chrome.exe')) break;
+    } catch { break; }
+  }
 
   for (const lock of ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile']) {
     try { fs.unlinkSync(path.join(userDataDir, lock)); } catch {}
