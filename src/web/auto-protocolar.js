@@ -631,43 +631,79 @@ function resolverCodigoClassificacao(fase, subfase) {
   return null;
 }
 
-async function importarDocumentoESAJ(esajAba, filePath) {
-  console.log(`[etapa-8] Abrindo formulário de petição intermediária...`);
+async function abrirFormularioPeticao(esajAba) {
+  console.log('[etapa-7] Clicando em Peticionar...');
   await esajAba.locator('#dropdownCriarPeticaoInicial').click();
   await esajAba.locator('#linkPeticionar').waitFor({ state: 'visible', timeout: 5000 });
   await esajAba.locator('#linkPeticionar').click();
+  // Aguarda o formulário carregar (botão de upload visível)
+  await esajAba.locator('[aria-label="Adicionar arquivos elaborados"]')
+    .waitFor({ state: 'visible', timeout: 15000 });
+  console.log('[etapa-7] Formulário de petição carregado.');
+}
 
+async function preencherDadosPeticao(esajAba, codigo) {
+  console.log('[etapa-8] Preenchendo dados da petição...');
+
+  // 1. PETICIONANTE — abrir dropdown → digitar → selecionar ÉRIKA → remover tag anterior
+  console.log('[etapa-8] Peticionante...');
+  const tagExistente = esajAba.locator('span.ui-select-match-text.pull-left').first();
+  if (await tagExistente.isVisible()) {
+    await tagExistente.click();
+  } else {
+    await esajAba.locator('span.ui-select-placeholder').first().click();
+  }
+  const searchPeticInput = esajAba.locator('input.ui-select-search').first();
+  await searchPeticInput.waitFor({ state: 'visible', timeout: 5000 });
+  await searchPeticInput.pressSequentially('ÉRIKA', { delay: 80 });
+  const erikaRow = esajAba.locator('span.ui-select-choices-row-inner span')
+    .filter({ hasText: /ÉRIKA PINTO NOGUEIRA.*Advogad/ });
+  await erikaRow.waitFor({ state: 'visible', timeout: 8000 });
+  await erikaRow.first().click();
+  const cancelBtn = esajAba.locator('span.glyph.glyph-cancel');
+  if (await cancelBtn.count() > 0) {
+    await cancelBtn.first().click();
+  }
+  console.log('[etapa-8] Peticionante ÉRIKA selecionada.');
+
+  // 2. CLASSIFICAÇÃO — sem arquivo ainda, não há sugestão; "Classificar" visível normalmente
+  console.log('[etapa-8] Classificação...');
+  await esajAba.locator('span.va-m:has-text("Classificar")')
+    .waitFor({ state: 'visible', timeout: 15000 });
+  await esajAba.locator('span.va-m:has-text("Classificar")').click();
+  await esajAba.locator('span.ui-select-placeholder.text-muted:not(.ng-hide)')
+    .waitFor({ state: 'visible', timeout: 5000 });
+  await esajAba.locator('span.ui-select-placeholder.text-muted:not(.ng-hide)').click();
+  await esajAba.locator('#selectClasseIntermediaria')
+    .pressSequentially(String(codigo), { delay: 80 });
+  const opcaoCodigo = esajAba.locator('span.selecao-classe--nome').filter({ hasText: String(codigo) });
+  await opcaoCodigo.waitFor({ state: 'visible', timeout: 8000 });
+  await opcaoCodigo.first().click();
+  await esajAba.locator('span.glyph.glyph-chevron-up').click();
+  console.log(`[etapa-8] Classificação ${codigo} selecionada.`);
+
+  // 3. SOLICITANTE: clicar em "Incluir parte" no card da empresa (identificado pelo CNPJ)
+  console.log('[etapa-8] Solicitante...');
+  const cardSolicitante = esajAba.locator('[id^="cardParte_"]').filter({ hasText: '01.088.089/0001-52' });
+  await cardSolicitante.waitFor({ state: 'visible', timeout: 10000 });
+  await cardSolicitante.locator('.botao-incluir-polo').click();
+
+  console.log('[etapa-8] Dados preenchidos.');
+}
+
+
+async function importarDocumentoESAJ(esajAba, filePath) {
+  console.log(`[etapa-9] Enviando arquivo: ${path.basename(filePath)}`);
   // Dois botões com id "botaoAdicionarDocumento" — diferencia por aria-label
   const btnDoc = esajAba.locator('[aria-label="Adicionar arquivos elaborados"]');
-  await btnDoc.waitFor({ state: 'visible', timeout: 15000 });
-  console.log(`[etapa-8] Enviando arquivo: ${path.basename(filePath)}`);
-
+  await btnDoc.waitFor({ state: 'visible', timeout: 10000 });
   const [fileChooser] = await Promise.all([
     esajAba.waitForEvent('filechooser'),
     btnDoc.click(),
   ]);
   await fileChooser.setFiles(filePath);
   await new Promise(r => setTimeout(r, 3000));
-  console.log('[etapa-8] Arquivo carregado.');
-}
-
-async function preencherDadosPeticao(esajAba, codigo) {
-  console.log('[etapa-9] Preenchendo dados da petição...');
-
-  // SOLICITANTE: selecionar pelo CNPJ da empresa
-  await esajAba.locator('li').filter({ hasText: '01.088.089/0001-52' })
-    .waitFor({ state: 'visible', timeout: 10000 });
-  await esajAba.locator('li').filter({ hasText: '01.088.089/0001-52' }).click();
-
-  // PETICIONANTE: ÉRIKA PINTO NOGUEIRA
-  await esajAba.locator('span').filter({ hasText: /ÉRIKA PINTO NOGUEIRA.*Advogad/ })
-    .first().click();
-  await esajAba.locator('span.glyph.glyph-accept').click();
-  await esajAba.locator('span.glyph.glyph-chevron-up').click();
-  await esajAba.locator('.botao-incluir-polo').click();
-
-  // TODO: CLASSIFICAÇÃO — seletores pendentes (gravar via recorder.js peticionar)
-  console.warn(`[etapa-9][TODO] CLASSIFICAÇÃO (código ${codigo}) — aguardando gravação dos seletores.`);
+  console.log('[etapa-9] Arquivo carregado.');
 }
 
 async function peticionarNoESAJ(esajAba, { pastaRecente, documentosEsperados, temAlvara, fase, subfase }) {
@@ -686,8 +722,9 @@ async function peticionarNoESAJ(esajAba, { pastaRecente, documentosEsperados, te
 
     console.log(`\n[peticionar] ${i + 1}/${docs.length} — ${ehAlvara ? 'Alvará' : 'Documento principal'} (${docName})`);
 
-    await importarDocumentoESAJ(esajAba, filePath);
-    await preencherDadosPeticao(esajAba, codigoDoc);
+    await abrirFormularioPeticao(esajAba);            // clica Peticionar → abre formulário
+    await preencherDadosPeticao(esajAba, codigoDoc);  // PETICIONANTE → CLASSIFICAÇÃO → SOLICITANTE
+    await importarDocumentoESAJ(esajAba, filePath);   // upload do arquivo
 
     const ultimoDoc = i === docs.length - 1;
     if (!ultimoDoc) {
@@ -860,6 +897,7 @@ module.exports = {
   encaminharServico,
   conferirEtapa7,
   resolverCodigoClassificacao,
+  abrirFormularioPeticao,
   importarDocumentoESAJ,
   preencherDadosPeticao,
   peticionarNoESAJ,
