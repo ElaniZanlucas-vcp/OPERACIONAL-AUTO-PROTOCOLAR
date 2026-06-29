@@ -50,11 +50,21 @@ const SEL = {
   // Salvar Fase (botão "Encaminhar" dentro do dialog) e Salvar Detalhes do Serviço
   BTN_SALVAR_FASE:     '[id="formDlgEnviarServico:j_idt750"], [id="formDlgEnviarServico:j_idt712"]',
   BTN_SALVAR_DETALHES: '[id="formServico:j_idt471"], [id="formServico:j_idt433"]',
+  BTN_FECHAR_DLG:      '.ui-dialog:has([id="formDlgVerServico"]) a.ui-dialog-titlebar-close',
 };
 
 
 
 // ── Helpers Node.js ───────────────────────────────────────────────────────────
+
+async function fecharDialogServico(page) {
+  const btn = page.locator(SEL.BTN_FECHAR_DLG);
+  const visivel = await btn.isVisible().catch(() => false);
+  if (visivel) {
+    await btn.click();
+    await aguardarAjax(page);
+  }
+}
 
 async function aguardarAjax(page) {
   await page.waitForFunction(
@@ -94,8 +104,9 @@ async function loginEsaj(context, pageExistente = null) {
 }
 
 // "doc1 // doc2" → ['doc1', 'doc2']  (doc2 é sempre Alvará quando presente)
+// Suporta "doc - descrição": extrai só o token antes de " - ".
 function parsearDocsObservacao(observacao) {
-  return observacao.split('//').map(d => d.trim()).filter(Boolean);
+  return observacao.split('//').map(d => d.trim().replace(/\s+-\s+.*$/, '').trim()).filter(Boolean);
 }
 
 function salvarExtracao(dados) {
@@ -280,6 +291,34 @@ function localizarPastaServico(servico) {
 
 // ── Etapa 5b: Extrair cabeçalho da 1ª página do PDF ─────────────────────────
 
+// Captura o valor de um campo que pode continuar em linhas seguintes (ex: REQDO com nome longo).
+// Para quando encontra linha vazia ou outra etiqueta conhecida.
+function extrairValorMultilinha(text, label) {
+  const linhas = text.split('\n');
+  const INICIO_CAMPO = /^(REQTE|REQDO|AUTOS|A[ÇC][ÃA]O|AO JU[IÍ]ZO)\b/i;
+  const labelRe = new RegExp(`^${label}[:\\s]+(.*)`, 'i');
+
+  let capturando = false;
+  const partes = [];
+
+  for (const linha of linhas) {
+    if (!capturando) {
+      const m = linha.match(labelRe);
+      if (m) {
+        capturando = true;
+        const primeira = m[1].trim();
+        if (primeira) partes.push(primeira);
+      }
+    } else {
+      const trimmed = linha.trim();
+      if (!trimmed || INICIO_CAMPO.test(trimmed)) break;
+      partes.push(trimmed);
+    }
+  }
+
+  return partes.length ? partes.join(' ').replace(/\s+/g, ' ').trim() : null;
+}
+
 async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   const nomeLower = nomeDocumento.toLowerCase();
   const arquivo = fs.readdirSync(pastaRecente).find(f =>
@@ -299,16 +338,14 @@ async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   const varaForo = text.match(/AO JU[IÍ]ZO DA (.+?) DA COMARCA DE ([^\n]+)/i);
   const autos    = text.match(/AUTOS[:\s]+([^\n]+)/i);
   const acao     = text.match(/A[ÇC][ÃA]O[:\s]+([^\n]+)/i);
-  const reqte    = text.match(/REQTE[:\s]+([^\n]+)/i);
-  const reqdo    = text.match(/REQDO[:\s]+([^\n]+)/i);
 
   const cabecalho = {
-    vara:     varaForo?.[1]?.trim()  ?? null,
-    foro:     varaForo?.[2]?.trim()  ?? null,
-    processo: autos?.[1]?.trim()     ?? null,
-    classe:   acao?.[1]?.trim()      ?? null,
-    reqte:    reqte?.[1]?.trim()     ?? null,
-    reqdo:    reqdo?.[1]?.trim()     ?? null,
+    vara:     varaForo?.[1]?.trim()           ?? null,
+    foro:     varaForo?.[2]?.trim()           ?? null,
+    processo: autos?.[1]?.trim()              ?? null,
+    classe:   acao?.[1]?.trim()               ?? null,
+    reqte:    extrairValorMultilinha(text, 'REQTE'),
+    reqdo:    extrairValorMultilinha(text, 'REQDO'),
     arquivo,
   };
 
@@ -577,7 +614,7 @@ function conferirEtapa7(cabecalhoDoc, esaj) {
 
 // ── Etapa 11: Encaminhar ──────────────────────────────────────────────────────
 
-async function encaminharServico(page, { nome, observacao }) {
+async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR PROTOCOLO' }) {
   // Dialog na aba Dados Básicos → "Editar" abre formulário completo em formServico:j_idt474
   console.log('[etapa-11] Clicando em Editar...');
   await page.locator(SEL.BTN_EDITAR).click();
@@ -605,12 +642,12 @@ async function encaminharServico(page, { nome, observacao }) {
   await nomePanel.locator('li:not(.ui-autocomplete-empty-message)').first().click();
   await aguardarAjax(page);
 
-  // Subfase — SelectOneMenu "AGUARDAR PROTOCOLO"
-  console.log('[etapa-11] Selecionando Subfase: AGUARDAR PROTOCOLO...');
+  // Subfase — SelectOneMenu
+  console.log(`[etapa-11] Selecionando Subfase: ${subfase}...`);
   await page.locator(SEL.SUBFASE_LABEL).click();
   const subfasePanel = page.locator(SEL.SUBFASE_PANEL);
   await subfasePanel.waitFor({ state: 'visible', timeout: 5000 });
-  await subfasePanel.locator('li').filter({ hasText: /AGUARDAR PROTOCOLO/i }).click();
+  await subfasePanel.locator('li').filter({ hasText: new RegExp(subfase, 'i') }).click();
   await aguardarAjax(page);
 
   // Observação — mesma da Fase (textarea)
@@ -875,9 +912,16 @@ async function processarServico(page, context, servicoAlvo = null) {
   salvarExtracao(extracao);
 
   if (!confere) {
-    console.warn('[etapa-3] Documentos não conferem com a Fase — encerrando serviço.');
+    console.warn('[etapa-3] Documentos não conferem com a Fase — encaminhando com subfase PROTOCOLAR.');
     console.warn(`  Esperado:   ${JSON.stringify(fases.documentosEsperados)}`);
     console.warn(`  Encontrado: ${JSON.stringify(documentosEncontrados)}`);
+    await page.locator(SEL.TAB_DADOS).click();
+    await aguardarAjax(page);
+    await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
+    extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
+    salvarExtracao(extracao);
+    await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+    await aguardarAjax(page);
     return { ok: false, motivo: 'documentos não conferem', ...extracao };
   }
 
@@ -918,6 +962,12 @@ async function processarServico(page, context, servicoAlvo = null) {
     // await notificarDivergencia(responsavel, conferencia, extracao.servico);
     await esajAba.close();
     await page.bringToFront();
+    console.warn('[etapa-7] Dados divergem — encaminhando com subfase PROTOCOLAR.');
+    await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
+    extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
+    salvarExtracao(extracao);
+    await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+    await aguardarAjax(page);
     return { ok: false, motivo: 'dados divergem entre documento e ESAJ', ...extracao };
   }
 
@@ -941,6 +991,11 @@ async function processarServico(page, context, servicoAlvo = null) {
   });
   extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'AGUARDAR PROTOCOLO', observacao: fases.observacao };
   salvarExtracao(extracao);
+
+  // Retorna à home para que o próximo serviço seja encontrado na tabela
+  console.log('[etapa-11] Redirecionando para home do SIGAD...');
+  await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+  await aguardarAjax(page);
 
   return { ok: true, ...extracao };
 }
