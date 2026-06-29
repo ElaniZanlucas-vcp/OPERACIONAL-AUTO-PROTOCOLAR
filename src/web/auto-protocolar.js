@@ -11,12 +11,14 @@ const { fazerLogin }   = require('./auth');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
-const SIGAD_LOGIN_URL = 'https://sistemas.vcpericia.com.br/sigad/';
-const ESAJ_LOGIN_URL  = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
+const SIGAD_LOGIN_URL  = 'https://sistemas.vcpericia.com.br/sigad/';
+const ESAJ_LOGIN_URL   = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
 const EXTRACAO_FILE    = path.resolve(__dirname, '../../data/extracao-protocolo.json');
+const PENDING_FILE     = path.resolve(__dirname, '../../data/pending.json');
 const TRABALHOS_FINAIS = process.env.TRABALHOS_FINAIS;
 
-const ENCAMINHAR_NOME = 'Dayane Franco Alves';
+const ENCAMINHAR_NOME     = 'Dayane Franco Alves';
+const SERVICOS_EXCLUIDOS  = ['26872']; // normalizado sem pontos
 
 // ── Seletores confirmados via recorder ───────────────────────────────────────
 
@@ -37,15 +39,19 @@ const SEL = {
   // Etapa 11 — Encaminhar (confirmados via recorder "encaminhar")
   // Após "Editar", o dialog fecha e o formulário abre em formServico:j_idt474
   BTN_EDITAR:       '[id="formDlgVerServico"] span.ui-button-text:has-text("Editar")',
-  TAB_FASES_EDIT:   '[id="formServico:j_idt474"] a:has-text("Fases")',
-  BTN_ENCAMINHAR:   '[id="formServico:j_idt474:j_idt545"]',
+  TAB_FASES_EDIT:   '[id="formServico:j_idt474"] a:has-text("Fases"), [id="formServico:j_idt436"] a:has-text("Fases")',
+  BTN_ENCAMINHAR:   '[id="formServico:j_idt474:j_idt545"], [id="formServico:j_idt436:j_idt507"]',
   DLG_ENCAMINHAR:   '[id="formDlgEnviarServico"]',
   NOME_INPUT:       '[id="formDlgEnviarServico:inputUsuario_input"]',
   NOME_PANEL:       '[id="formDlgEnviarServico:inputUsuario_panel"]',
   SUBFASE_LABEL:    '[id="formDlgEnviarServico:inputSubfase_label"]',
   SUBFASE_PANEL:    '[id="formDlgEnviarServico:inputSubfase_panel"]',
   OBS_FASE:         '[id="formDlgEnviarServico:inputObsFase"]',
+  // Salvar Fase (botão "Encaminhar" dentro do dialog) e Salvar Detalhes do Serviço
+  BTN_SALVAR_FASE:     '[id="formDlgEnviarServico:j_idt750"], [id="formDlgEnviarServico:j_idt712"]',
+  BTN_SALVAR_DETALHES: '[id="formServico:j_idt471"], [id="formServico:j_idt433"]',
 };
+
 
 
 // ── Helpers Node.js ───────────────────────────────────────────────────────────
@@ -613,8 +619,17 @@ async function encaminharServico(page, { nome, observacao }) {
   await obsField.click({ clickCount: 3 });
   await obsField.fill(observacao);
 
-  // [SIMULAÇÃO] — não clicar no botão final de Encaminhar/Salvar
-  console.log('[etapa-11][SIMULAÇÃO] Formulário preenchido — encerrado sem salvar.');
+  // Salvar Fase — clica "Encaminhar" dentro do dialog
+  console.log('[etapa-11] Salvando Fase (Encaminhar no dialog)...');
+  await page.locator(SEL.BTN_SALVAR_FASE).click();
+  await aguardarAjax(page);
+  console.log('[etapa-11] Fase salva.');
+
+  // Salvar Detalhes do Serviço — botão "Salvar" do formulário principal
+  console.log('[etapa-11] Salvando Detalhes do Serviço...');
+  await page.locator(SEL.BTN_SALVAR_DETALHES).click();
+  await aguardarAjax(page);
+  console.log('[etapa-11] Detalhes do Serviço salvos.');
 }
 
 // ── Etapas 8-10: Protocolar no ESAJ ──────────────────────────────────────────
@@ -803,9 +818,8 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
     await importarDocumentoESAJ(abaAtual, filePath);
     await preencherDadosPeticao(abaAtual, codigos[i]);
 
-    console.log(`[etapa-10] Aguardando 10s (modo teste — ${label})...`);
-    await new Promise(r => setTimeout(r, 10000));
-    await abaAtual.locator('#botaoVoltarListagemConsulta').click();
+    console.log(`[etapa-10] Salvando petição (${label})...`);
+    await abaAtual.locator('#botaoSalvarPeticaoParaProtocolar').click();
     await abaAtual.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     console.log(`[etapa-10] ${label}: Fechar clicado.`);
 
@@ -817,11 +831,32 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
 
 // ── Fluxo por serviço ─────────────────────────────────────────────────────────
 
-async function processarServico(page, context) {
-  // Etapa 1 — Lê o Serviço e abre o dialog
-  const primeiraLinha = page.locator(SEL.SERVICO_LINHAS).first();
-  const servico = await primeiraLinha.locator(SEL.SERVICO_ITEM).textContent().then(t => t.trim());
-  await primeiraLinha.locator(SEL.SERVICO_ITEM).click();
+function normalizarServico(s) {
+  return s.replace(/\./g, '').trim();
+}
+
+async function listarServicos(page) {
+  const linhas  = page.locator(SEL.SERVICO_LINHAS);
+  const count   = await linhas.count();
+  const servicos = [];
+  for (let i = 0; i < count; i++) {
+    const txt = await linhas.nth(i).locator(SEL.SERVICO_ITEM).textContent().catch(() => '');
+    const num = txt.trim();
+    if (num) servicos.push(num);
+  }
+  return servicos;
+}
+
+async function processarServico(page, context, servicoAlvo = null) {
+  // Etapa 1 — Localiza a linha do serviço e abre o dialog
+  const linhaServico = servicoAlvo
+    ? page.locator(SEL.SERVICO_LINHAS)
+        .filter({ has: page.locator(SEL.SERVICO_ITEM).filter({ hasText: servicoAlvo }) })
+        .first()
+    : page.locator(SEL.SERVICO_LINHAS).first();
+
+  const servico = await linhaServico.locator(SEL.SERVICO_ITEM).textContent().then(t => t.trim());
+  await linhaServico.locator(SEL.SERVICO_ITEM).click();
   await aguardarAjax(page);
   await page.locator('[id="formDlgVerServico"]').waitFor({ state: 'visible', timeout: 10000 });
 
@@ -899,15 +934,60 @@ async function processarServico(page, context) {
   extracao.peticao = { ok: true };
   salvarExtracao(extracao);
 
-  // TODO: Etapa 11 — Encaminhar
-  // await encaminharServico(page, {
-  //   nome: ENCAMINHAR_NOME,
-  //   observacao: fases.observacao,
-  // });
-  // extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'AGUARDAR PROTOCOLO', observacao: fases.observacao };
-  // salvarExtracao(extracao);
+  // Etapa 11 — Encaminhar
+  await encaminharServico(page, {
+    nome:      ENCAMINHAR_NOME,
+    observacao: fases.observacao,
+  });
+  extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'AGUARDAR PROTOCOLO', observacao: fases.observacao };
+  salvarExtracao(extracao);
 
   return { ok: true, ...extracao };
+}
+
+// ── Modo etapa11 — roda só o encaminhamento a partir de extracao-protocolo.json ─
+
+async function mainEtapa11() {
+  if (!fs.existsSync(EXTRACAO_FILE)) {
+    throw new Error(`[etapa-11] ${EXTRACAO_FILE} não encontrado — execute o fluxo completo primeiro.`);
+  }
+  const extracao = JSON.parse(fs.readFileSync(EXTRACAO_FILE, 'utf-8'));
+  const { servico, fases } = extracao;
+  if (!servico || !fases?.observacao) {
+    throw new Error('[etapa-11] extracao-protocolo.json não contém servico/fases.observacao.');
+  }
+  console.log(`[etapa-11] Retomando encaminhamento do serviço ${servico} (obs: "${fases.observacao}")`);
+
+  const { browser, context } = await abrirBrowser();
+  const page = context.pages()[0] ?? await context.newPage();
+
+  try {
+    console.log('[etapa-11] Verificando sessão SIGAD...');
+    await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+    const jaLogado = await page.locator('span.menuitem-text:has-text("Painéis")').isVisible().catch(() => false);
+    if (!jaLogado) {
+      console.log('[etapa-11] Sessão expirada — realizando login...');
+      await fazerLogin(page, context);
+    }
+
+    // Abre o dialog do serviço
+    const linhaServico = page.locator(SEL.SERVICO_LINHAS)
+      .filter({ has: page.locator(SEL.SERVICO_ITEM).filter({ hasText: servico }) })
+      .first();
+    await linhaServico.locator(SEL.SERVICO_ITEM).click();
+    await aguardarAjax(page);
+    await page.locator('[id="formDlgVerServico"]').waitFor({ state: 'visible', timeout: 10000 });
+
+    // Garante que estamos na aba Dados Básicos (onde fica o botão Editar)
+    await page.locator(SEL.TAB_DADOS).click();
+    await aguardarAjax(page);
+
+    await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao });
+    console.log('[etapa-11] Encaminhamento concluído.');
+  } finally {
+    console.log('\n[etapa-11] Concluído. Feche o browser quando terminar.');
+    await new Promise(() => {});
+  }
 }
 
 // ── Fluxo principal ───────────────────────────────────────────────────────────
@@ -917,11 +997,11 @@ async function main() {
   const page = context.pages()[0] ?? await context.newPage();
 
   try {
-    // 1. Login ESAJ (certificado) — necessário antes de qualquer consulta ao ESAJ
+    // 1. Login ESAJ
     console.log('[auto-protocolar] Verificando sessão ESAJ...');
     await loginEsaj(context, page);
 
-    // 2. Login SIGAD — redireciona para a página inicial ao concluir
+    // 2. Login SIGAD
     console.log('[auto-protocolar] Verificando sessão SIGAD...');
     await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
     const jaLogado = await page.locator('span.menuitem-text:has-text("Painéis")').isVisible().catch(() => false);
@@ -931,15 +1011,39 @@ async function main() {
     } else {
       console.log('[auto-protocolar] Sessão SIGAD ativa.');
     }
-    console.log(`[auto-protocolar] Página inicial: ${page.url()}`);
 
-    // TODO: iterar sobre todos os serviços em formServico:tabela_data
-    const resultado = await processarServico(page, context);
-    console.log('\n[auto-protocolar] Resultado:', JSON.stringify(resultado, null, 2));
+    // 3. Carregar ou criar pending.json
+    let pendentes;
+    if (fs.existsSync(PENDING_FILE)) {
+      pendentes = JSON.parse(fs.readFileSync(PENDING_FILE, 'utf-8'));
+      console.log(`[auto-protocolar] Retomando ${pendentes.length} serviços de pending.json: ${JSON.stringify(pendentes)}`);
+    } else {
+      const todos = await listarServicos(page);
+      pendentes = todos.filter(s => !SERVICOS_EXCLUIDOS.includes(normalizarServico(s)));
+      fs.writeFileSync(PENDING_FILE, JSON.stringify(pendentes, null, 2), 'utf-8');
+      const excluidos = todos.length - pendentes.length;
+      console.log(`[auto-protocolar] ${pendentes.length} serviços em pending.json (${excluidos} excluído${excluidos !== 1 ? 's' : ''}).`);
+      console.log(`[auto-protocolar] Pendentes: ${JSON.stringify(pendentes)}`);
+    }
+
+    // 4. Loop principal
+    for (const servicoAlvo of [...pendentes]) {
+      console.log(`\n[auto-protocolar] ══ Processando: ${servicoAlvo} ══`);
+      const resultado = await processarServico(page, context, servicoAlvo);
+      console.log('[auto-protocolar] Resultado:', JSON.stringify(resultado, null, 2));
+
+      pendentes = pendentes.filter(s => s !== servicoAlvo);
+      fs.writeFileSync(PENDING_FILE, JSON.stringify(pendentes, null, 2), 'utf-8');
+      console.log(`[auto-protocolar] ${servicoAlvo} concluído. ${pendentes.length} restante(s).`);
+    }
+
+    if (fs.existsSync(PENDING_FILE)) fs.unlinkSync(PENDING_FILE);
+    console.log('[auto-protocolar] Todos os serviços processados. pending.json removido.');
 
   } catch (err) {
     console.error('[auto-protocolar] Erro:', err.message);
     console.error(err.stack);
+    console.log('[auto-protocolar] pending.json preservado para retomada.');
   } finally {
     console.log('\n[auto-protocolar] Concluído. Feche o browser quando terminar.');
     await new Promise(() => {});
@@ -947,13 +1051,17 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch(err => {
+  const modo = process.argv[2];
+  const fn   = modo === 'etapa11' ? mainEtapa11 : main;
+  fn().catch(err => {
     console.error('[auto-protocolar] Erro fatal:', err.message);
     process.exit(1);
   });
 }
 
 module.exports = {
+  normalizarServico,
+  listarServicos,
   processarServico,
   extrairFases,
   extrairDocumentos,

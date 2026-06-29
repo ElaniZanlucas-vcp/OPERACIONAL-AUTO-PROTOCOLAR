@@ -1,58 +1,66 @@
-# Fluxograma da Rotina Diária
+# Fluxograma — Auto-Protocolar
 
-Agendamento: segunda a sexta, 08:00 e 14:00 (America/Sao_Paulo).
-Cron: `0 8,14 * * 1-5` — configurado em `.claude/routines/rotina-diaria.json` (comentado até todos os stubs serem implementados).
+Executado manualmente: `node src/web/auto-protocolar.js`
+Retomada parcial (Etapa 11): `node src/web/auto-protocolar.js etapa11`
 
 ---
 
 ```
-[INÍCIO DA ROTINA] (08:00 / 14:00)
+[INÍCIO]
 │
-├─ [1. Login] ─────────────────────────────── src/web/auth.js            ✔ implementado
-│      Valida sessão existente (auth.json) ou faz login e salva cookies.
+├─ [1. Login ESAJ] ───────────────── certificado digital             ✔
+├─ [2. Login SIGAD] ──────────────── sessão ativa ou auth.js         ✔
+├─ [3. Listar serviços] ──────────── pending.json (retomável)        ✔
 │
-├─ [2. Acessar Rota e Filtrar Dados] ─────── src/web/crawler.js          ✔ implementado
-│      Aplica filtro Situação = Cadastro → extrai todas as páginas
-│      → data/resultados.json  ({ servico, teor, disponibilizacao, processo })
+│ ╔══════════════════════════════════════════════════════════════════╗
+│ ║  LOOP por serviço em pending.json                                ║
+│ ║                                                                  ║
+│ ║  [Etapa 2]  Aba Fases ─────────────────────────────────── ✔     ║
+│ ║      Extrai Fase, Subfase, Observação                            ║
+│ ║      Observação = docs esperados (separados por //)              ║
+│ ║      Sem fases → pula serviço                                    ║
+│ ║                                                                  ║
+│ ║  [Etapa 3]  Aba Documentos ───────────────────────────── ✔      ║
+│ ║      Extrai 1 ou 2 docs mais recentes (2 se há Alvará)           ║
+│ ║      Não confere com Observação da Fase → pula serviço           ║
+│ ║                                                                  ║
+│ ║  [Etapa 4]  Dados Básicos → abre ESAJ em nova aba ──────── ✔    ║
+│ ║      Retry ×3 se reCAPTCHA (#linkPasta ausente)                  ║
+│ ║                                                                  ║
+│ ║  [Etapa 5]  Localizar pasta no servidor ───────────────── ✔     ║
+│ ║      TRABALHOS_FINAIS/<servico>/<subpasta_mais_recente>/         ║
+│ ║      Extrai cabeçalho da 1ª pág do PDF                           ║
+│ ║      (vara, foro, n° processo, classe, reqte, reqdo)             ║
+│ ║                                                                  ║
+│ ║  [Etapa 6]  Extrair partes + cabeçalho do ESAJ ────────── ✔     ║
+│ ║      (paralelo) Autor + Réu; "E OUTROS" se tableTodasPartes      ║
+│ ║      Cabeçalho: classe, foro, vara, n° processo — maiúsculo      ║
+│ ║                                                                  ║
+│ ║  [Etapa 7]  Conferir doc × ESAJ ──────────────────────── ✔      ║
+│ ║      Compara: vara, foro, processo, classe, autor, réu           ║
+│ ║      Divergência → notificação e-mail ⚙ pendente → pula         ║
+│ ║                                                                  ║
+│ ║  ┌─── Loop Peticionar (1× normal · 2× se Alvará) ─────────────┐ ║
+│ ║  │  [Etapa 8]  Abrir formulário de petição ─────────── ✔       │ ║
+│ ║  │  [Etapa 9]  Importar documento PDF ──────────────── ✔       │ ║
+│ ║  │  [Etapa 9]  Preencher dados da petição ──────────── ✔       │ ║
+│ ║  │      Peticionante: ÉRIKA PINTO NOGUEIRA                     │ ║
+│ ║  │      Classificação: código por Fase/Subfase                  │ ║
+│ ║  │      Solicitante: Vinicius Coutinho (01.088.089/0001-52)     │ ║
+│ ║  │  [Etapa 10] Salvar para protocolar depois ─────────── ✔     │ ║
+│ ║  │      (Alvará: reabre ESAJ pela Etapa 4, código 38380)        │ ║
+│ ║  └──────────────────────────────────────────────────────────────┘ ║
+│ ║                                                                  ║
+│ ║  [Etapa 11] Encaminhar no SIGAD ──────────────────────── ✔      ║
+│ ║      Editar → aba Fases → Encaminhar                            ║
+│ ║      Nome: Dayane Franco Alves | Subfase: AGUARDAR PROTOCOLO     ║
+│ ║      Observação: mesma da Fase → Salvar Fase → Salvar Detalhes  ║
+│ ║                                                                  ║
+│ ╚══════════════════════════════════════════════════════════════════╝
 │
-│ ╔══════════════════════════════════════════════════════════════════════╗
-│ ║  LOOP por item em data/resultados.json  (controle: pending.json)     ║
-│ ║                                                                      ║
-│ ║  [3. Baixar o processo] ────────────────── ESAJ / clicarAbaProcesso  ║
-│ ║       Abre guia ESAJ, preenche campos se vazios, clica Consultar     ║
-│ ║       (retry ×3 se reCAPTCHA), clica Visualizar Autos, aguarda 3s.   ║
-│ ║       [Gemini p/ resumo] ────────────────────────────── ⚙ pendente   ║
-│ ║                                                                      ║
-│ ║  [4. Chamada Gemini p/ resumo do processo] ─────────── ⚙ pendente   ║
-│ ║                                                                      ║
-│ ║  [5. Chamada skill-tipo-pericia] ──────────────────────── ✔         ║
-│ ║       Classifica o processo em um dos ~70 tipos de perícia.          ║
-│ ║                                                                      ║
-│ ║  [6. Chamada skill-proposta-honorarios] ───────────────── ✔          ║
-│ ║       Calcula faixa de honorários com base no tipo e na matriz.      ║
-│ ║                                                                      ║
-│ ║  [7. Preencher Notas] ─────────────────────────────────── ✔          ║
-│ ║       Escreve classificação + proposta no campo Notas do SIGAD.      ║
-│ ║                                                                      ║
-│ ║  [8. Preencher Partes] ────────────────────────────────── ✔ simulado ║
-│ ║       Parser extrai partes e advogados das Notas →                   ║
-│ ║       preenche aba Partes; Cadastro no SIGAD se não encontrado.      ║
-│ ║       [UI de advogado ainda não mapeada — simulação]                 ║
-│ ║                                                                      ║
-│ ║  [9. Add Evento — Entrega Proposta] ───────────────────── ✔ simulado ║
-│ ║       Cria evento ENTREGA PROPOSTA com Data Prevista + Prazo.        ║
-│ ║       [Formulário preenchido mas não salvo em simulação]             ║
-│ ║                                                                      ║
-│ ║  [10. Iterar para o próximo item] ─────────────────────── ✔          ║
-│ ║       Remove item do pending.json; continua até lista vazia.         ║
-│ ╚══════════════════════════════════════════════════════════════════════╝
-│
-├─ [11. Limpeza dos arquivos .json] ──────────────────────── ✘ pendente
-│       Remove resultados.json, pending.json, partes-temporarias.json.
-│       auth.json é mantido (cookies de sessão).
-│       Implementar APENAS após todas as verificações e rotinas.
-│
-[FIM DA ROTINA]
+└─ [Limpeza] ─────────────── pending.json removido ao final do loop  ✔
+
+[FIM]
 ```
 
 ---
@@ -61,16 +69,26 @@ Cron: `0 8,14 * * 1-5` — configurado em `.claude/routines/rotina-diaria.json` 
 
 | Símbolo | Significado |
 |---------|-------------|
-| `✔ implementado` | Funcional e testado |
-| `✔ simulado` | Funcional, mas sem salvar/confirmar no SIGAD (modo seguro) |
-| `⚙ pendente` | Estrutura criada, lógica interna não implementada |
-| `✘ pendente` | Ainda não iniciado — aguarda conclusão de etapas anteriores |
+| `✔` | Implementado e funcional |
+| `⚙ pendente` | Estrutura presente, lógica não implementada |
+
+---
+
+## Tabela de Classificação (Etapa 9)
+
+| Fase | Subfase | Código | Descrição |
+|------|---------|--------|-----------|
+| Qualquer | `PROTOCOLAR-PRAZO` | 38423 | Dilação de prazo |
+| Qualquer | `PROTOCOLAR-*` (exceto prazo) | 8822 | Manifestação do perito |
+| Laudo / Esclarecimento | `PROTOCOLAR` | 38368 | Laudo |
+| Outros | `PROTOCOLAR` | 8822 | Manifestação do perito |
+| — | Alvará (2° doc) | 38380 | Pedido de expedição de alvará |
 
 ---
 
 ## Diretrizes para o Claude Code
 
-1. **Orquestração:** iniciar conforme `processar-dados.md` (skill de orquestração).
-2. **Consumo de tokens:** Claude Code só intervém nos Passos 5 e 6 (skills). Todo o resto é Playwright/Node puro.
-3. **Logs:** prefixos `[auth]`, `[crawler]`, `[api-site]`, `[recorder]`, `[main]` para monitoramento.
-4. **Retomada:** se o loop for interrompido, a próxima execução continua de onde parou via `pending.json`.
+1. **Seletores:** IDs `j_idt*` podem mudar entre deploys — manter fallbacks CSS com vírgula no objeto `SEL`.
+2. **AJAX:** sempre chamar `aguardarAjax(page)` após interações PrimeFaces.
+3. **Retomada:** se o loop for interrompido na Etapa 11, rodar `node src/web/auto-protocolar.js etapa11`.
+4. **Logs:** prefixos `[etapa-2]` … `[etapa-11]` e `[peticionar]` para rastrear o ponto de falha.

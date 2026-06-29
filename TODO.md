@@ -1,17 +1,22 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
-0. ajustar o Fechar para Salvar para Peticionar Depois -> mudar id
+0. Testar $\green ✔$
 
-1. Caso Fase e Doc não batam:
+SE FUNCIONAR, FAZER COMMIT
+
+1. Revisar formato do Cabeçalho do doc (se é sempre o mesmo)
+
+2. Caso Fase e Doc não batam:
     - Finalizar o fluxo e retornar uma mensagem de aviso.json
 
-2. Caso Doc e esaj não batam:
+3. Caso Doc e esaj não batam:
     - Armazenar o Serviço, Processo, Divergências, Responsável e iterar para o próximo
     - Ao final do fluxo, retornar em forma de mensagem as divergências separadas por Responsável
     - Ou seja, se um Responsável possuir > 1 divergência, será retornado na mesma mensagem, mas com as divisões bem estabelecidas para não haver confusão.
 
-3. Fazer o loop para iteração, adicionando a Exceção de Serviço 26872
+
+
 
 
 $\green ✔$
@@ -35,11 +40,11 @@ FLUXOGRAMA:
 [Loop Alvará]
 7. Conferência das Partes do Processo c/ Cabeçalho do Documento e Peticionar $\orange {apenas caso positivo}$
 8. Importação de documento $\green ✔$
-9. Preencher Dados da Petição 
-10. Salvar para protocolar depois (add condicional de Alvará p/ clicar no Processo e Peticionar - minilooping caso tenha Alvará)
+9. Preencher Dados da Petição $\green ✔$
+10. Salvar para protocolar depois (add condicional de Alvará p/ clicar no Processo e Peticionar - minilooping caso tenha Alvará) 
 [Fim Loop Alvará]
 11. Retorno ao sigad: Encaminhar $\green ✔$
-12. Iterar
+12. Iterar $\green ✔$
 
 [Fim do loop]
 

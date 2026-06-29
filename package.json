@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "pre": "node main.js pre",
-    "api": "node src/web/api-site.js",
+    "protocolar": "node src/web/auto-protocolar.js",
     "recorder": "node src/web/recorder.js",
     "teste-partes": "node src/web/teste-partes.js"
   },
