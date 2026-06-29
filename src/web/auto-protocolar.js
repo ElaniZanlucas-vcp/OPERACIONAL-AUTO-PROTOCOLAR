@@ -104,9 +104,25 @@ async function loginEsaj(context, pageExistente = null) {
 }
 
 // "doc1 // doc2" → ['doc1', 'doc2']  (doc2 é sempre Alvará quando presente)
-// Suporta "doc - descrição": extrai só o token antes de " - ".
+// Fallback de separadores: // → ; → " - " (entre dois códigos de documento)
+// " - " como sufixo de descrição continua sendo removido no caso de doc único.
 function parsearDocsObservacao(observacao) {
-  return observacao.split('//').map(d => d.trim().replace(/\s+-\s+.*$/, '').trim()).filter(Boolean);
+  const obs = observacao.trim();
+
+  if (obs.includes('//'))
+    return obs.split('//').map(d => d.trim().replace(/\s+-\s+.*$/, '').trim()).filter(Boolean);
+
+  if (obs.includes(';'))
+    return obs.split(';').map(d => d.trim().replace(/\s+-\s+.*$/, '').trim()).filter(Boolean);
+
+  // " - " só vira separador quando ambos os lados parecem código (letras+dígito, sem espaço interno)
+  const partesDash = obs.split(/\s+-\s+/);
+  const eCodigo = p => /^[A-Za-z]+\d/.test(p) && !p.includes(' ');
+  if (partesDash.length > 1 && partesDash.every(p => eCodigo(p.trim())))
+    return partesDash.map(d => d.trim()).filter(Boolean);
+
+  // Único documento — remove sufixo " - descrição" se presente
+  return obs ? [obs.replace(/\s+-\s+.*$/, '').trim()] : [];
 }
 
 function salvarExtracao(dados) {
@@ -195,11 +211,23 @@ async function extrairDocumentos(page, temAlvara) {
 
     return [...document.querySelectorAll(seletorLinhas)]
       .slice(0, qtd)
-      .map((row, idx) => ({
-        documento:   valorCelula(celulaPorTitulo(row, 'Documento')),
-        responsavel: idx === 0 ? valorCelula(celulaPorTitulo(row, 'Responsável')) : null,
+      .map(row => ({
+        documento:     valorCelula(celulaPorTitulo(row, 'Documento')),
+        tipoDocumento: valorCelula(celulaPorTitulo(row, 'Tipo Documento')),
+        responsavel:   valorCelula(celulaPorTitulo(row, 'Responsável')),
       }));
   }, { seletorLinhas: SEL.DOCS_LINHAS, qtd });
+
+  // Quando há Alvará, garante que ele fica sempre em índice 1 (doc2),
+  // independente da ordem exibida pelo SIGAD.
+  if (temAlvara && documentos.length === 2) {
+    const idxAlvara = documentos.findIndex(d =>
+      d.tipoDocumento.toUpperCase().includes('ALVARA')
+    );
+    if (idxAlvara === 0) documentos.reverse();
+  }
+  // Responsável é relevante apenas para o documento principal (índice 0)
+  documentos.slice(1).forEach(d => { d.responsavel = null; });
 
   console.log(`[etapa-3] Docs encontrados (${documentos.length}): ${JSON.stringify(documentos)}`);
   return documentos;
@@ -291,32 +319,100 @@ function localizarPastaServico(servico) {
 
 // ── Etapa 5b: Extrair cabeçalho da 1ª página do PDF ─────────────────────────
 
-// Captura o valor de um campo que pode continuar em linhas seguintes (ex: REQDO com nome longo).
-// Para quando encontra linha vazia ou outra etiqueta conhecida.
-function extrairValorMultilinha(text, label) {
-  const linhas = text.split('\n');
-  const INICIO_CAMPO = /^(REQTE|REQDO|AUTOS|A[ÇC][ÃA]O|AO JU[IÍ]ZO)\b/i;
-  const labelRe = new RegExp(`^${label}[:\\s]+(.*)`, 'i');
+// Rótulos de autor/réu por tipo de processo — abreviados e por extenso, inclusive feminino.
+// Masculino/feminino nos rótulos de réu unificados com [OA] (ex: EXECUTAD[OA]).
+const SIGLAS_AUTOR = [
+  'REQTE',          // requerente
+  'EXEQTE',         // exequente (abrev)
+  'EXEQUENTE',      // exequente (extenso)
+  'LIQUIDANTE',     // liquidação
+  'LIQTE',          // liquidante (abrev)
+  'INVENTARIANTE',  // inventário
+  'IMPUGNANTE',     // impugnação
+  'IMPUGTE',        // impugnante (abrev)
+  'RECONVINTE',     // reconvenção
+  'RECONVTE',       // reconvinte (abrev)
+].join('|');
 
-  let capturando = false;
-  const partes = [];
+const SIGLAS_REU = [
+  'REQD[OA]',            // requerido
+  'EXECTD[OA]',       // executado/executada (abrev)
+  'EXECUTAD[OA]',     // executado/executada (extenso)
+  'LIQUIDAD[OA]',     // liquidado/liquidada
+  'LIQD[OA]',         // liquidado/liquidada (abrev)
+  'INVENTARIAD[OA]',  // inventariado/inventariada
+  'INVTD[OA]',        // inventariado/inventariada (abrev)
+  'IMPUGNAD[OA]',     // impugnado/impugnada
+  'IMPUGD[OA]',       // impugnado/impugnada (abrev)
+  'RECONVIND[OA]',    // reconvindo/reconvinda
+  'RECONVD[OA]',      // reconvindo/reconvinda (abrev)
+].join('|');
+
+// Extrai os campos do cabeçalho do PDF em passo único e na ordem esperada do documento.
+// Cada campo só é procurado após o campo anterior ter sido encontrado (ou descartado),
+// impedindo que "AÇÃO" seja capturada de "CERTIFICAÇÃO" no corpo ou de menções tardias.
+// Campos multilinhas são unidos; linhas em branco fecham o campo, exceto para aoJuizo
+// (que pode ter quebras de linha entre vara e foro e só fecha em outro campo conhecido).
+function extrairCamposSequenciais(linhas) {
+  const ORDEM = [
+    { key: 'aoJuizo',  re: /^AO\s+JU[ÍI]ZO[\s:]+(.+)/i, continueOnBlank: true },
+    { key: 'processo', re: /^AUTOS[:\s]+(.*)/i },
+    { key: 'classe',   re: /^A[ÇC][ÃA]O[:\s]+(.*)/i },
+    { key: 'reqte',    re: new RegExp(`^(?:${SIGLAS_AUTOR})[:\\s]+(.*)`, 'i') },
+    { key: 'reqdo',    re: new RegExp(`^(?:${SIGLAS_REU})[:\\s]+(.*)`, 'i') },
+  ];
+  const INICIO_CAMPO = new RegExp(
+    `^(AO\\s+JU[ÍI]ZO|AUTOS|A[ÇC][ÃA]O|${SIGLAS_AUTOR}|${SIGLAS_REU})\\b`, 'i'
+  );
+
+  const resultado = {};
+  let capturandoKey = null;
+  let continueOnBlank = false;
+  let partes = [];
+  let proximoIdx = 0;
+
+  function fecharCampo() {
+    if (capturandoKey && partes.length) {
+      resultado[capturandoKey] = partes.join(' ').replace(/\s+/g, ' ').trim();
+    }
+    capturandoKey = null;
+    continueOnBlank = false;
+    partes = [];
+  }
 
   for (const linha of linhas) {
-    if (!capturando) {
-      const m = linha.match(labelRe);
-      if (m) {
-        capturando = true;
-        const primeira = m[1].trim();
-        if (primeira) partes.push(primeira);
+    const trimmed = linha.trim();
+
+    if (capturandoKey) {
+      if (INICIO_CAMPO.test(trimmed)) {
+        fecharCampo();
+        // cai para verificar se esta linha inicia novo campo
+      } else if (!trimmed) {
+        if (!continueOnBlank) fecharCampo();
+        continue; // linha em branco: fecha (ou ignora) e não tenta abrir novo campo
+      } else {
+        partes.push(trimmed);
+        continue;
       }
-    } else {
-      const trimmed = linha.trim();
-      if (!trimmed || INICIO_CAMPO.test(trimmed)) break;
-      partes.push(trimmed);
+    }
+
+    if (!trimmed || proximoIdx >= ORDEM.length) continue;
+
+    for (let i = proximoIdx; i < ORDEM.length; i++) {
+      const m = trimmed.match(ORDEM[i].re);
+      if (m) {
+        proximoIdx = i + 1;
+        capturandoKey = ORDEM[i].key;
+        continueOnBlank = ORDEM[i].continueOnBlank ?? false;
+        const primeiro = m[1].trim();
+        partes = primeiro ? [primeiro] : [];
+        break;
+      }
     }
   }
 
-  return partes.length ? partes.join(' ').replace(/\s+/g, ' ').trim() : null;
+  fecharCampo();
+  return resultado;
 }
 
 async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
@@ -333,19 +429,35 @@ async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   console.log(`[etapa-5] Lendo PDF: ${caminho}`);
 
   const buffer = fs.readFileSync(caminho);
-  const { text } = await pdfParse(buffer, { max: 1 }); // apenas 1ª página
+  const { text } = await pdfParse(buffer, { max: 1 }); // 1ª página
 
-  const varaForo = text.match(/AO JU[IÍ]ZO DA (.+?) DA COMARCA DE ([^\n]+)/i);
-  const autos    = text.match(/AUTOS[:\s]+([^\n]+)/i);
-  const acao     = text.match(/A[ÇC][ÃA]O[:\s]+([^\n]+)/i);
+  // NFC: recompõe caracteres decompostos (ex: I+combining acute → Í) para que os regexes casem
+  const linhas = text.normalize('NFC').split('\n');
+  const campos = extrairCamposSequenciais(linhas);
+
+  // Fallback: partes embutidas na mesma linha da AÇÃO
+  // Ex: "LIQUIDAÇÃO POR ARBITRAMENTO EXEQTE: RAMÃO ALVES EXECTDO: PAX NACIONAL..."
+  if (!campos.reqte && campos.classe) {
+    const re = new RegExp(
+      `^(.*?)\\s+\\b(${SIGLAS_AUTOR})\\b[\\s:]+(.+?)\\s+\\b(${SIGLAS_REU})\\b[\\s:]+(.+)$`, 'i'
+    );
+    const m = campos.classe.match(re);
+    if (m) {
+      campos.classe = m[1].trim();
+      campos.reqte  = m[3].trim();
+      campos.reqdo  = m[5].trim();
+    }
+  }
+
+  const varaForo = campos.aoJuizo?.match(/DA (.+?) DA COMARCA DE (.+)/i);
 
   const cabecalho = {
-    vara:     varaForo?.[1]?.trim()           ?? null,
-    foro:     varaForo?.[2]?.trim()           ?? null,
-    processo: autos?.[1]?.trim()              ?? null,
-    classe:   acao?.[1]?.trim()               ?? null,
-    reqte:    extrairValorMultilinha(text, 'REQTE'),
-    reqdo:    extrairValorMultilinha(text, 'REQDO'),
+    vara:     varaForo?.[1]?.trim() ?? null,
+    foro:     varaForo?.[2]?.trim() ?? null,
+    processo: campos.processo       ?? null,
+    classe:   campos.classe         ?? null,
+    reqte:    campos.reqte          ?? null,
+    reqdo:    campos.reqdo          ?? null,
     arquivo,
   };
 
@@ -500,13 +612,16 @@ async function extrairCabecalhoDoESAJ(esajPage, numeroProcesso) {
 function normalizar(str) {
   if (!str) return '';
   return str
+    .replace(/&amp;/gi, '&')              // decodifica entidade HTML (&AMP; do ESAJ)
     .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove acentos
     .toUpperCase()
     .replace(/\/[A-Z]{2,3}\.?\s*$/, '')  // remove /MS. /MT. /SP. no final (foro)
+    .replace(/\bS\/A\b/g, 'SA')          // S/A → SA antes de converter barras
     .replace(/\//g, ' ')                  // barras restantes → espaço
-    .replace(/[.,]/g, '')                 // remove pontuação
+    .replace(/[.,]/g, '')                 // remove pontuação (S.A. → SA)
     .replace(/\b0+(\d+[ªº°])/g, '$1')    // 02ª → 2ª (apenas ordinais, não afeta n° processo)
     .replace(/\s+/g, ' ')
+    .replace(/\bS A\b/g, 'SA')           // S. A. → após remoção de pontos e colapso vira "S A"
     .trim();
 }
 

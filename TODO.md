@@ -5,19 +5,13 @@ TODO: Automação Protocolar - Ordenar
 
 SE FUNCIONAR, FAZER COMMIT
 
-1. Revisar formato do Cabeçalho do doc (se é sempre o mesmo)
+2. Caso Fase e Doc [etapa 3] ou Doc e esaj [etapa 7] não batam:
+    - Encaminhar para Dayane como Protocolar [etapa 11] e iterar
 
-2. Caso Fase e Doc não batam:
-    - Finalizar o fluxo e retornar uma mensagem de aviso.json
-
-3. Caso Doc e esaj não batam:
+Possível sugestão:
     - Armazenar o Serviço, Processo, Divergências, Responsável e iterar para o próximo
     - Ao final do fluxo, retornar em forma de mensagem as divergências separadas por Responsável
     - Ou seja, se um Responsável possuir > 1 divergência, será retornado na mesma mensagem, mas com as divisões bem estabelecidas para não haver confusão.
-
-
-
-
 
 $\green ✔$
 - ideia: fazer um recorder.js para cada fluxograma, assim conseguimos evoluir gradualmente como foi feito para a automação do Sigad
@@ -35,13 +29,13 @@ FLUXOGRAMA:
 2. Acessar Fases $\green ✔$
 3. Acessar Documentos p/ conferência c/ a Fase $\green ✔$
 4. Acessar Dados Básicos e clicar no Processo $\green ✔$
-5. Acessar o Servidor p/ extrair Cabeçalho do documento $\orange {verificar outros docs}$
+5. Acessar o Servidor p/ extrair Cabeçalho do documento $\green ✔$
 6. Extrair Partes do Processo e o Cabeçalho no esaj $\green ✔$
 [Loop Alvará]
-7. Conferência das Partes do Processo c/ Cabeçalho do Documento e Peticionar $\orange {apenas caso positivo}$
+7. Conferência das Partes do Processo c/ Cabeçalho do Documento e Peticionar $\green ✔$
 8. Importação de documento $\green ✔$
 9. Preencher Dados da Petição $\green ✔$
-10. Salvar para protocolar depois (add condicional de Alvará p/ clicar no Processo e Peticionar - minilooping caso tenha Alvará) 
+10. Salvar para protocolar depois (add condicional de Alvará p/ clicar no Processo e Peticionar - minilooping caso tenha Alvará) $\green ✔$
 [Fim Loop Alvará]
 11. Retorno ao sigad: Encaminhar $\green ✔$
 12. Iterar $\green ✔$
@@ -72,7 +66,7 @@ Vamos mostrar o fluxo até a etapa 4 e seremos redirecionados para o esaj (para 
 2. 1. Caso exista Alvará, copiar os 2 Documentos mais recentes
 3. Verificar se os documentos encontrados batem com os documentos extraídos de Fase no campo Observação (doc1 // doc2 na Fase trata-se de doc1, doc2 considerando a ordem pelo mais recente nos Documentos)
 3. 1. Em caso positivo, continuar o fluxo para a próxima etapa
-3. 2. Em caso negativo, o fluxo termina aqui $\orange {ajustar}$
+3. 2. Em caso negativo, encaminhar para Dayane como Protocolar
 
 
 ==============================
@@ -83,7 +77,7 @@ Vamos mostrar o fluxo até a etapa 4 e seremos redirecionados para o esaj (para 
 
 
 ==============================
-[ETAPA-5] FLUXOGRAMA ACESSAR SERVIDOR (Trabalhos Finais): $\orange {verificar outros docs formato cabeçalho}$
+[ETAPA-5] FLUXOGRAMA ACESSAR SERVIDOR (Trabalhos Finais): $\green ✔$
 ==============================
 - Acessar pelo path?
 - Compensa chamar Gemini API p/ olhar Cabeçalho do documento e rodapés? Forma + simples?
@@ -116,7 +110,7 @@ Ao final da extração, todos os dados devem estar em maiúsculo para fins de co
 
 
 ==============================
-[ETAPA-7] PETICIONAR OU RETORNAR: 
+[ETAPA-7] PETICIONAR OU RETORNAR:  $\green ✔$
 ==============================
 1. Com a extração de dados do documento e do esaj, conferimos se os dados estão batendo corretamente  $\green ✔$
 Mostraremos um exemplo de verificação dos dados a partir do Documento em Trabalhos Finais. Os termos dentro de {} são os termos a serem comparados dos dados extraídos do esaj.
@@ -131,7 +125,7 @@ REQDO: {Réu}
 Obs: Lembre-se das variações de Autor e Réu em Siglas existentes no Sigad. O mais importante é verificar se os nomes condizem, sendo assim, lembrar que pode haver variações de acento, pontuação e /.
 
 2. 1. Em caso positivo, Peticionar (por enquanto, vamos apenas implementar o caso positivo) $\green ✔$
-2. 2. Em caso negativo, Retornar/Encaminhar (pra quem?) para que seja corrigido
+2. 2. Em caso negativo, encaminhar para Dayane como Protocolar para que seja corrigido
 - Add condicional para quando tiver Alvará (o loop inicia aqui e finaliza ao Salvar para Protocolar depois)
 
 OBS: A etapa 7.1 já está funcionando, então não é necessário alterar
@@ -158,7 +152,7 @@ Caso seja mais fácil, o plugin do gmail ajudaria?
 2. O primeiro import sempre deve ser o doc != de Alvará, ou seja, a segunda execução do loop de peticionar é para o Alvará
 
 ==============================
-[ETAPA-9] FLUXOGRAMA PREENCHER DADOS DA PETIÇÃO:
+[ETAPA-9] FLUXOGRAMA PREENCHER DADOS DA PETIÇÃO: $\green ✔$
 ==============================
 PETICIONANTE: ÉRIKA PINTO NOGUEIRA (ÉRIKA PINTO NOGUEIRA - Advogado(a))
 
@@ -190,7 +184,7 @@ SOLICITANTE (polo_represent_list): Vinicius Coutinho Consultoria e Perícia S/S 
 
 
 ==============================
-[ETAPA-10] FLUXOGRAMA SALVAR PARA PROTOCOLAR DEPOIS:
+[ETAPA-10] FLUXOGRAMA SALVAR PARA PROTOCOLAR DEPOIS: $\green ✔$
 ==============================
 1. Para fins de teste, vamos fazer a seguinte condição para o Alvará:
 1. 1. Caso tenha Alvará, após preencher todos os dados acima, vamos clicar no span numeroProcesso para sermos novamente redirecionados para a capa do processo no esaj e fazermos o mesmo fluxo (8 a 10) para Alvará.
@@ -215,7 +209,5 @@ Obs: para fins de teste, podemos fazer o recorder clicar em Fechar. Assim ele ac
     Observação: mesma Observação de Fase
 
 ==============================
-
-Atualize o recorder.js para fazer o fluxo de auto-protocolar. Assim conseguimos mostrar corretamente o funcionamento das Etapas 8 a 10 para implementá-las em sequência.
 
 
