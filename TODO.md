@@ -1,14 +1,42 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
-0. Testar $\green ✔$
+[ENCAMINHAR-EXECUÇÃO]
+ node src/web/auto-protocolar.js etapa11
 
-SE FUNCIONAR, FAZER COMMIT
+Analise como está sendo feita a extração de partes no esaj e vamos fazer a seguinte alteração:
+- Atualmente, a extração está sendo feita por tablePartesPrincipais. 
+Fazendo uma breve verificação, percebemos que alguns docs do servidor podem extrair as Partes (autor e réu) de tableTodasPartes.
+Considerando isso, precisamos de uma forma de verificar se alguma parte do esaj dá match com a Parte que está no doc.
+Para isso, vamos fazer o seguinte:
+1. Se tableTodasPartes não existir, o fluxo continua como está
+2. Se tableTodasPartes existir, fazemos o fluxo existente.
+2. 1. Se não encontrar, precisamos extrair todas as Partes de Autor e Réu (considerando suas variações em sigla) como fallback e verificar se alguma outra Parte de Autor e Réu dá match corretamente. 
+2. 1. 1. Se encontrar, continue o fluxo normalmente.
+2. 1. 2. Se não encontrar mesmo com este fallback, então seguiremos para o fluxo de encaminhar [etapa 11] como já está sendo feito.
 
-2. Caso Fase e Doc [etapa 3] ou Doc e esaj [etapa 7] não batam:
-    - Encaminhar para Dayane como Protocolar [etapa 11] e iterar
+Ex:
+Caso 2:
+[ok] doc: Fulano | esaj: Fulano
+-> Peticionar
 
-Possível sugestão:
+Caso 2.1:
+[xx] doc: Fulano | esaj: Ciclano
+- Extrair tableTodasPartes:
+- retorno esaj: Ciclano, Fulano [ok], Beltrano
+[ok] doc: Fulano | esaj: Fulano
+-> Peticionar
+
+Caso 2.1.2:
+[xx] doc: Fulano | esaj: Ciclano
+- Extrair tableTodasPartes:
+- retorno esaj: Ciclano, Beltrano
+[xx] doc: Fulano | esaj: Ciclano, Beltrano
+-> Encaminhar -> Protocolar
+
+============================================
+
+Possível sugestão (divergências de etapa 3 e 7):
     - Armazenar o Serviço, Processo, Divergências, Responsável e iterar para o próximo
     - Ao final do fluxo, retornar em forma de mensagem as divergências separadas por Responsável
     - Ou seja, se um Responsável possuir > 1 divergência, será retornado na mesma mensagem, mas com as divisões bem estabelecidas para não haver confusão.

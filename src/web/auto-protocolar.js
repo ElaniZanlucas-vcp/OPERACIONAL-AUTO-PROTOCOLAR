@@ -15,6 +15,7 @@ const SIGAD_LOGIN_URL  = 'https://sistemas.vcpericia.com.br/sigad/';
 const ESAJ_LOGIN_URL   = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado';
 const EXTRACAO_FILE    = path.resolve(__dirname, '../../data/extracao-protocolo.json');
 const PENDING_FILE     = path.resolve(__dirname, '../../data/pending.json');
+const ENCAMINHAR_FILE  = path.resolve(__dirname, '../../data/encaminhar.json');
 const TRABALHOS_FINAIS = process.env.TRABALHOS_FINAIS;
 
 const ENCAMINHAR_NOME     = 'Dayane Franco Alves';
@@ -29,27 +30,22 @@ const SEL = {
 
   // Tabs do dialog formDlgVerServico (confirmadas: fluxo-protocolar + encaminhar)
   TAB_FASES: '[id="formDlgVerServico:tabViewEvento"] a:has-text("Fases")',
-  TAB_DOCS:  '[id="formDlgVerServico:tabViewEvento"] a:has-text("Documentos")',
+  TAB_DOCS:  '[id="formDlgVerServico:tabViewEvento"] a:not(.ui-commandlink):has-text("Documentos")',
   TAB_DADOS: '[id="formDlgVerServico:tabViewEvento"] a:has-text("Dados Básicos")',
 
   // Linhas das tabelas de fases e documentos (vista)
   FASES_LINHAS: '[id="formDlgVerServico:tabViewEvento:tabListaFase_data"] tr',
   DOCS_LINHAS:  '[id="formDlgVerServico:tabViewEvento:tabListaDocumento_data"] tr',
 
-  // Etapa 11 — Encaminhar (confirmados via recorder "encaminhar")
-  // Após "Editar", o dialog fecha e o formulário abre em formServico:j_idt474
-  BTN_EDITAR:       '[id="formDlgVerServico"] span.ui-button-text:has-text("Editar")',
-  TAB_FASES_EDIT:   '[id="formServico:j_idt474"] a:has-text("Fases"), [id="formServico:j_idt436"] a:has-text("Fases")',
-  BTN_ENCAMINHAR:   '[id="formServico:j_idt474:j_idt545"], [id="formServico:j_idt436:j_idt507"]',
-  DLG_ENCAMINHAR:   '[id="formDlgEnviarServico"]',
-  NOME_INPUT:       '[id="formDlgEnviarServico:inputUsuario_input"]',
-  NOME_PANEL:       '[id="formDlgEnviarServico:inputUsuario_panel"]',
-  SUBFASE_LABEL:    '[id="formDlgEnviarServico:inputSubfase_label"]',
-  SUBFASE_PANEL:    '[id="formDlgEnviarServico:inputSubfase_panel"]',
-  OBS_FASE:         '[id="formDlgEnviarServico:inputObsFase"]',
-  // Salvar Fase (botão "Encaminhar" dentro do dialog) e Salvar Detalhes do Serviço
-  BTN_SALVAR_FASE:     '[id="formDlgEnviarServico:j_idt750"], [id="formDlgEnviarServico:j_idt712"]',
-  BTN_SALVAR_DETALHES: '[id="formServico:j_idt471"], [id="formServico:j_idt433"]',
+  // Etapa 11 — Encaminhar
+  // IDs dinâmicos (j_idt*) são resolvidos com fallback em cascata dentro de encaminharServico()
+  BTN_EDITAR:    '[id="formDlgVerServico"] span.ui-button-text:has-text("Editar")',
+  DLG_ENCAMINHAR: '[id="formDlgEnviarServico"]',
+  NOME_INPUT:     '[id="formDlgEnviarServico:inputUsuario_input"]',
+  NOME_PANEL:     '[id="formDlgEnviarServico:inputUsuario_panel"]',
+  SUBFASE_LABEL:  '[id="formDlgEnviarServico:inputSubfase_label"]',
+  SUBFASE_PANEL:  '[id="formDlgEnviarServico:inputSubfase_panel"]',
+  OBS_FASE:       '[id="formDlgEnviarServico:inputObsFase"]',
   BTN_FECHAR_DLG:      '.ui-dialog:has([id="formDlgVerServico"]) a.ui-dialog-titlebar-close',
 };
 
@@ -109,20 +105,27 @@ async function loginEsaj(context, pageExistente = null) {
 function parsearDocsObservacao(observacao) {
   const obs = observacao.trim();
 
+  // Extrai só o código de um token que pode vir como "CÓDIGO - descrição", "CÓDIGO. descrição" ou "CÓDIGO descrição".
+  // Só corta a descrição quando o primeiro fragmento parece código (letras seguidas de dígito).
+  // Códigos puramente numéricos (ex: 38380) são devolvidos inteiros.
+  function extrairCodigo(token) {
+    const semDash = token.trim().replace(/\s+-\s+.*$/, '').trim();
+    const primeiro = semDash.split(/[\s.]+/)[0];
+    return /^[A-Za-z]+\d/.test(primeiro) ? primeiro : semDash;
+  }
+
   if (obs.includes('//'))
-    return obs.split('//').map(d => d.trim().replace(/\s+-\s+.*$/, '').trim()).filter(Boolean);
+    return obs.split('//').map(extrairCodigo).filter(Boolean);
 
   if (obs.includes(';'))
-    return obs.split(';').map(d => d.trim().replace(/\s+-\s+.*$/, '').trim()).filter(Boolean);
+    return obs.split(';').map(extrairCodigo).filter(Boolean);
 
   // " - " só vira separador quando ambos os lados parecem código (letras+dígito, sem espaço interno)
   const partesDash = obs.split(/\s+-\s+/);
-  const eCodigo = p => /^[A-Za-z]+\d/.test(p) && !p.includes(' ');
-  if (partesDash.length > 1 && partesDash.every(p => eCodigo(p.trim())))
+  if (partesDash.length > 1 && partesDash.every(p => /^[A-Za-z]+\d/.test(p.trim()) && !p.trim().includes(' ')))
     return partesDash.map(d => d.trim()).filter(Boolean);
 
-  // Único documento — remove sufixo " - descrição" se presente
-  return obs ? [obs.replace(/\s+-\s+.*$/, '').trim()] : [];
+  return obs ? [extrairCodigo(obs)] : [];
 }
 
 function salvarExtracao(dados) {
@@ -332,6 +335,8 @@ const SIGLAS_AUTOR = [
   'IMPUGTE',        // impugnante (abrev)
   'RECONVINTE',     // reconvenção
   'RECONVTE',       // reconvinte (abrev)
+  'EMBARGANTE',     // embargos
+  'EMBARGTE',       // embargante (abrev)
 ].join('|');
 
 const SIGLAS_REU = [
@@ -346,6 +351,8 @@ const SIGLAS_REU = [
   'IMPUGD[OA]',       // impugnado/impugnada (abrev)
   'RECONVIND[OA]',    // reconvindo/reconvinda
   'RECONVD[OA]',      // reconvindo/reconvinda (abrev)
+  'EMBARGAD[OA]',     // embargado/embargada (extenso)
+  'EMBARGD[OA]',      // embargado/embargada (abrev)
 ].join('|');
 
 // Extrai os campos do cabeçalho do PDF em passo único e na ordem esperada do documento.
@@ -542,14 +549,16 @@ async function extrairPartesDoESAJ(esajPage) {
     return [];
   }
 
-  const contagemCompleta = new Map();
+  const todasPartes = linhasCompletas ? { AUTOR: [], 'RÉU': [] } : null;
   if (linhasCompletas) {
-    for (const { label } of linhasCompletas) {
+    for (const { label, nome } of linhasCompletas) {
       const labelNorm = label.replace(/[.:]$/, '').trim();
       if (/^Advogad[ao]s?$/i.test(labelNorm)) continue;
       const role = classificarRoleESAJ(labelNorm);
       if (!role) continue;
-      contagemCompleta.set(role, (contagemCompleta.get(role) ?? 0) + 1);
+      const nomeMaiusc = nome.toUpperCase().trim();
+      if (!nomeMaiusc || /^SEM\s/i.test(nomeMaiusc)) continue;
+      todasPartes[role].push(nomeMaiusc);
     }
   }
 
@@ -567,12 +576,12 @@ async function extrairPartesDoESAJ(esajPage) {
 
   const partes = [];
   for (const [participacao, nome] of porRole) {
-    const total = contagemCompleta.get(participacao) ?? 0;
+    const total = todasPartes ? todasPartes[participacao].length : 0;
     const sufixo = total > 1 ? ' E OUTROS' : '';
     partes.push({ participacao, nome: nome + sufixo });
   }
 
-  return partes;
+  return { partes, todasPartes };
 }
 
 async function extrairCabecalhoDoESAJ(esajPage, numeroProcesso) {
@@ -612,12 +621,14 @@ async function extrairCabecalhoDoESAJ(esajPage, numeroProcesso) {
 function normalizar(str) {
   if (!str) return '';
   return str
+    .replace(/^'+/, '')                   // remove apóstrofo inicial (artefato ESAJ)
     .replace(/&amp;/gi, '&')              // decodifica entidade HTML (&AMP; do ESAJ)
     .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove acentos
     .toUpperCase()
     .replace(/\/[A-Z]{2,3}\.?\s*$/, '')  // remove /MS. /MT. /SP. no final (foro)
     .replace(/\bS\/A\b/g, 'SA')          // S/A → SA antes de converter barras
     .replace(/\//g, ' ')                  // barras restantes → espaço
+    .replace(/\s+-\s+/g, ' ')            // "Comaves - Industria" → "Comaves Industria"
     .replace(/[.,]/g, '')                 // remove pontuação (S.A. → SA)
     .replace(/\b0+(\d+[ªº°])/g, '$1')    // 02ª → 2ª (apenas ordinais, não afeta n° processo)
     .replace(/\s+/g, ' ')
@@ -729,20 +740,56 @@ function conferirEtapa7(cabecalhoDoc, esaj) {
 
 // ── Etapa 11: Encaminhar ──────────────────────────────────────────────────────
 
+// IDs conhecidos por deploy — quando o fallback for usado, o console.warn mostra o ID real para atualizar aqui
+const TAB_FASES_CONTAINER_IDS  = ['j_idt474', 'j_idt436', 'j_idt438'];
+const BTN_ENCAMINHAR_IDS       = ['formServico:j_idt474:j_idt545', 'formServico:j_idt436:j_idt507', 'formServico:j_idt438:j_idt509'];
+const BTN_SALVAR_FASE_IDS      = ['formDlgEnviarServico:j_idt714', 'formDlgEnviarServico:j_idt750', 'formDlgEnviarServico:j_idt712'];
+const BTN_SALVAR_DETALHES_IDS  = ['formServico:j_idt471', 'formServico:j_idt433'];
+
 async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR PROTOCOLO' }) {
-  // Dialog na aba Dados Básicos → "Editar" abre formulário completo em formServico:j_idt474
   console.log('[etapa-11] Clicando em Editar...');
   await page.locator(SEL.BTN_EDITAR).click();
   await aguardarAjax(page);
 
-  // Após Editar, as abas estão em formServico:j_idt474 (não mais no dialog)
+  // Aba Fases — testa IDs conhecidos; fallback por .ui-tabview-nav
   console.log('[etapa-11] Clicando na aba Fases...');
-  await page.locator(SEL.TAB_FASES_EDIT).click();
+  let tabFases = null;
+  for (const id of TAB_FASES_CONTAINER_IDS) {
+    const loc = page.locator(`[id="formServico:${id}"] a:has-text("Fases")`);
+    if (await loc.isVisible().catch(() => false)) { tabFases = loc; break; }
+  }
+  if (!tabFases) {
+    const byNav = page.locator('[id="formServico"] .ui-tabview-nav a:has-text("Fases")');
+    if ((await byNav.count().catch(() => 0)) > 0) {
+      tabFases = byNav.first();
+      const idContainer = await byNav.first()
+        .evaluate(el => el.closest('.ui-tabview')?.id ?? '?').catch(() => '?');
+      console.warn(`[etapa-11] TAB_FASES_EDIT: IDs conhecidos não encontrados. Fallback container="${idContainer}". Adicione em TAB_FASES_CONTAINER_IDS.`);
+    }
+  }
+  if (!tabFases) throw new Error('[etapa-11] Aba Fases não encontrada após Editar.');
+  await tabFases.click();
   await aguardarAjax(page);
 
-  // Abre dialog de encaminhamento
+  // Botão Encaminhar — testa IDs conhecidos; fallback por button no painel ativo
   console.log('[etapa-11] Clicando em Encaminhar...');
-  await page.locator(SEL.BTN_ENCAMINHAR).click();
+  let btnEncaminhar = null;
+  for (const id of BTN_ENCAMINHAR_IDS) {
+    const loc = page.locator(`[id="${id}"]`);
+    if (await loc.isVisible().catch(() => false)) { btnEncaminhar = loc; break; }
+  }
+  if (!btnEncaminhar) {
+    const byText = page
+      .locator('[id="formServico"] .ui-tabview-panel:not(.ui-helper-hidden) button.ui-button:not(.ui-state-disabled)')
+      .filter({ hasText: /encaminhar/i });
+    if ((await byText.count().catch(() => 0)) > 0) {
+      btnEncaminhar = byText.first();
+      const idFallback = await btnEncaminhar.getAttribute('id').catch(() => '?');
+      console.warn(`[etapa-11] BTN_ENCAMINHAR: usando fallback id="${idFallback}". Adicione em BTN_ENCAMINHAR_IDS.`);
+    }
+  }
+  if (!btnEncaminhar) throw new Error('[etapa-11] Botão Encaminhar não encontrado.');
+  await btnEncaminhar.click();
   await aguardarAjax(page);
   await page.locator(SEL.DLG_ENCAMINHAR).waitFor({ state: 'visible', timeout: 10000 });
 
@@ -762,24 +809,81 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
   await page.locator(SEL.SUBFASE_LABEL).click();
   const subfasePanel = page.locator(SEL.SUBFASE_PANEL);
   await subfasePanel.waitFor({ state: 'visible', timeout: 5000 });
-  await subfasePanel.locator('li').filter({ hasText: new RegExp(subfase, 'i') }).click();
+  await subfasePanel.locator(`li[data-label="${subfase}"]`).click();
   await aguardarAjax(page);
 
-  // Observação — mesma da Fase (textarea)
+  // Observação
   console.log(`[etapa-11] Preenchendo Observação: "${observacao}"...`);
   const obsField = page.locator(SEL.OBS_FASE);
   await obsField.click({ clickCount: 3 });
   await obsField.fill(observacao);
 
-  // Salvar Fase — clica "Encaminhar" dentro do dialog
+  // Salvar Fase (botão "Encaminhar" dentro do dialog) — testa IDs conhecidos; fallback em cascata
   console.log('[etapa-11] Salvando Fase (Encaminhar no dialog)...');
-  await page.locator(SEL.BTN_SALVAR_FASE).click();
+  await page.locator(SEL.DLG_ENCAMINHAR).waitFor({ state: 'visible', timeout: 5000 });
+
+  // Usa o container .ui-dialog (inclui footer) — PrimeFaces coloca botões fora do <form>
+  const dlgContainer = page.locator('.ui-dialog:has([id="formDlgEnviarServico"])');
+
+  // Diagnóstico: imprime todos os .ui-button do dialog para mapear o ID correto
+  const botoesNoDialog = await dlgContainer.locator('.ui-button').evaluateAll(
+    els => els.map(el => ({ id: el.id || '(sem id)', tag: el.tagName, texto: el.textContent?.trim().slice(0, 40) }))
+  ).catch(() => []);
+  console.log('[etapa-11] Botões no dialog Encaminhar:', JSON.stringify(botoesNoDialog));
+
+  let btnSalvarFase = null;
+  for (const id of BTN_SALVAR_FASE_IDS) {
+    const loc = page.locator(`[id="${id}"]`);
+    if (await loc.isVisible().catch(() => false)) { btnSalvarFase = loc; break; }
+  }
+  if (!btnSalvarFase) {
+    // Fallback 1: qualquer .ui-button com texto de ação no container do dialog (exclui Cancelar/Fechar)
+    const byText = dlgContainer
+      .locator('.ui-button:not(.ui-state-disabled)')
+      .filter({ hasText: /encaminhar|salvar/i })
+      .filter({ hasNotText: /cancelar|fechar/i });
+    if ((await byText.count().catch(() => 0)) > 0) {
+      btnSalvarFase = byText.first();
+      const idFallback = await btnSalvarFase.getAttribute('id').catch(() => '?');
+      console.warn(`[etapa-11] BTN_SALVAR_FASE fallback-1 (texto): id="${idFallback}". Adicione em BTN_SALVAR_FASE_IDS.`);
+    }
+  }
+  if (!btnSalvarFase) {
+    // Fallback 2: último .ui-button habilitado do container, excluindo Cancelar/Fechar
+    const actionBtns = dlgContainer
+      .locator('.ui-button:not(.ui-state-disabled)')
+      .filter({ hasNotText: /cancelar|fechar/i });
+    const count = await actionBtns.count().catch(() => 0);
+    if (count > 0) {
+      btnSalvarFase = actionBtns.last();
+      const idFallback = await btnSalvarFase.getAttribute('id').catch(() => '?');
+      console.warn(`[etapa-11] BTN_SALVAR_FASE fallback-2 (last sem Cancelar): id="${idFallback}". Adicione em BTN_SALVAR_FASE_IDS.`);
+    }
+  }
+  if (!btnSalvarFase) throw new Error('[etapa-11] Botão Salvar Fase não encontrado no dialog Encaminhar.');
+  await btnSalvarFase.click();
   await aguardarAjax(page);
   console.log('[etapa-11] Fase salva.');
 
-  // Salvar Detalhes do Serviço — botão "Salvar" do formulário principal
+  // Salvar Detalhes do Serviço — testa IDs conhecidos; fallback por button "Salvar" no formServico
   console.log('[etapa-11] Salvando Detalhes do Serviço...');
-  await page.locator(SEL.BTN_SALVAR_DETALHES).click();
+  let btnSalvarDetalhes = null;
+  for (const id of BTN_SALVAR_DETALHES_IDS) {
+    const loc = page.locator(`[id="${id}"]`);
+    if (await loc.isVisible().catch(() => false)) { btnSalvarDetalhes = loc; break; }
+  }
+  if (!btnSalvarDetalhes) {
+    const byText = page
+      .locator('[id="formServico"] button.ui-button:not(.ui-state-disabled)')
+      .filter({ hasText: /salvar/i });
+    if ((await byText.count().catch(() => 0)) > 0) {
+      btnSalvarDetalhes = byText.first();
+      const idFallback = await btnSalvarDetalhes.getAttribute('id').catch(() => '?');
+      console.warn(`[etapa-11] BTN_SALVAR_DETALHES: usando fallback id="${idFallback}". Adicione em BTN_SALVAR_DETALHES_IDS.`);
+    }
+  }
+  if (!btnSalvarDetalhes) throw new Error('[etapa-11] Botão Salvar Detalhes não encontrado.');
+  await btnSalvarDetalhes.click();
   await aguardarAjax(page);
   console.log('[etapa-11] Detalhes do Serviço salvos.');
 }
@@ -1049,21 +1153,33 @@ async function processarServico(page, context, servicoAlvo = null) {
   salvarExtracao(extracao);
 
   // Etapa 5 — Localizar pasta e extrair cabeçalho do PDF
-  const { pastaServico, pastaRecente } = localizarPastaServico(extracao.servico);
-  extracao.pasta = { servico: pastaServico, recente: pastaRecente };
-  const cabecalhoDoc = await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[0]);
-  extracao.cabecalhoDoc = cabecalhoDoc;
-  salvarExtracao(extracao);
+  let pastaServico, pastaRecente, cabecalhoDoc;
+  try {
+    ({ pastaServico, pastaRecente } = localizarPastaServico(extracao.servico));
+    extracao.pasta = { servico: pastaServico, recente: pastaRecente };
+    cabecalhoDoc = await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[0]);
+    extracao.cabecalhoDoc = cabecalhoDoc;
+    salvarExtracao(extracao);
+  } catch (err) {
+    console.warn(`[etapa-5] ${err.message} — encaminhando com subfase PROTOCOLAR.`);
+    await esajAba.close().catch(() => {});
+    await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
+    extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
+    salvarExtracao(extracao);
+    await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+    await aguardarAjax(page);
+    return { ok: false, motivo: err.message, ...extracao };
+  }
 
   // Etapa 6 — Extrair partes e cabeçalho do ESAJ
   console.log('[etapa-6] Extraindo partes e cabeçalho do ESAJ...');
-  const [partesESAJ, cabecalhoESAJ] = await Promise.all([
+  const [resultadoPartes, cabecalhoESAJ] = await Promise.all([
     extrairPartesDoESAJ(esajAba),
     extrairCabecalhoDoESAJ(esajAba, numeroProcesso),
   ]);
-  extracao.esaj = { partes: partesESAJ, cabecalho: cabecalhoESAJ };
+  extracao.esaj = { partes: resultadoPartes.partes, todasPartes: resultadoPartes.todasPartes, cabecalho: cabecalhoESAJ };
   salvarExtracao(extracao);
-  console.log(`[etapa-6] Partes: ${JSON.stringify(partesESAJ)}`);
+  console.log(`[etapa-6] Partes: ${JSON.stringify(resultadoPartes.partes)}`);
   console.log(`[etapa-6] Cabeçalho ESAJ: ${JSON.stringify(cabecalhoESAJ)}`);
 
   // Etapa 7 — Conferir dados do documento com ESAJ
@@ -1072,18 +1188,37 @@ async function processarServico(page, context, servicoAlvo = null) {
   salvarExtracao(extracao);
 
   if (!conferencia.ok) {
-    console.warn('[etapa-7] Dados divergem — notificação por e-mail pendente (configurar GMAIL_USUARIO/GMAIL_APP_PASSWORD).');
-    // const responsavel = extracao.documentos.encontrados[0]?.responsavel ?? '';
-    // await notificarDivergencia(responsavel, conferencia, extracao.servico);
-    await esajAba.close();
-    await page.bringToFront();
-    console.warn('[etapa-7] Dados divergem — encaminhando com subfase PROTOCOLAR.');
-    await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
-    extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
-    salvarExtracao(extracao);
-    await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
-    await aguardarAjax(page);
-    return { ok: false, motivo: 'dados divergem entre documento e ESAJ', ...extracao };
+    let divergenciaSuperada = false;
+
+    const todasPartes = extracao.esaj.todasPartes;
+    if (todasPartes) {
+      console.log('[etapa-7.1] tableTodasPartes disponível — tentando fallback de partes...');
+      divergenciaSuperada = conferencia.campos.every(r => {
+        if (r.bate) return true;
+        if (r.campo !== 'autor' && r.campo !== 'reu') return false;
+        const role = r.campo === 'autor' ? 'AUTOR' : 'RÉU';
+        const candidatos = todasPartes[role] ?? [];
+        const bateu = candidatos.some(cand => nomesBatem(r.doc, cand));
+        console.log(`  [etapa-7.1] ${r.campo}: doc="${r.doc}" candidatos=[${candidatos.join(' | ')}] → ${bateu ? '[OK]' : '[XX]'}`);
+        return bateu;
+      });
+      console.log(`[etapa-7.1] Fallback: ${divergenciaSuperada ? 'match encontrado — prosseguindo' : 'sem match'}.`);
+    }
+
+    if (!divergenciaSuperada) {
+      console.warn('[etapa-7] Dados divergem — notificação por e-mail pendente (configurar GMAIL_USUARIO/GMAIL_APP_PASSWORD).');
+      // const responsavel = extracao.documentos.encontrados[0]?.responsavel ?? '';
+      // await notificarDivergencia(responsavel, conferencia, extracao.servico);
+      await esajAba.close();
+      await page.bringToFront();
+      console.warn('[etapa-7] Dados divergem — encaminhando com subfase PROTOCOLAR.');
+      await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
+      extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
+      salvarExtracao(extracao);
+      await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+      await aguardarAjax(page);
+      return { ok: false, motivo: 'dados divergem entre documento e ESAJ', ...extracao };
+    }
   }
 
   console.log('[etapa-7] Dados conferem. Prosseguindo para Etapas 8-10 (peticionar)...');
@@ -1117,16 +1252,28 @@ async function processarServico(page, context, servicoAlvo = null) {
 
 // ── Modo etapa11 — roda só o encaminhamento a partir de extracao-protocolo.json ─
 
+async function abrirServicoESigad(page, servico) {
+  const linhaServico = page.locator(SEL.SERVICO_LINHAS)
+    .filter({ has: page.locator(SEL.SERVICO_ITEM).filter({ hasText: servico }) })
+    .first();
+  await linhaServico.locator(SEL.SERVICO_ITEM).click();
+  await aguardarAjax(page);
+  await page.locator('[id="formDlgVerServico"]').waitFor({ state: 'visible', timeout: 10000 });
+  await page.locator(SEL.TAB_DADOS).click();
+  await aguardarAjax(page);
+}
+
 async function mainEtapa11() {
-  if (!fs.existsSync(EXTRACAO_FILE)) {
-    throw new Error(`[etapa-11] ${EXTRACAO_FILE} não encontrado — execute o fluxo completo primeiro.`);
+  const temBatch    = fs.existsSync(ENCAMINHAR_FILE);
+  const temExtracao = fs.existsSync(EXTRACAO_FILE);
+
+  if (!temBatch && !temExtracao) {
+    throw new Error(
+      '[etapa-11] Nenhum arquivo de entrada encontrado.\n' +
+      `  Batch:    crie ${ENCAMINHAR_FILE} com [{ "servico": "XX.XXX", "observacao": "..." }]\n` +
+      `  Retomada: execute o fluxo completo primeiro (gera ${EXTRACAO_FILE}).`
+    );
   }
-  const extracao = JSON.parse(fs.readFileSync(EXTRACAO_FILE, 'utf-8'));
-  const { servico, fases } = extracao;
-  if (!servico || !fases?.observacao) {
-    throw new Error('[etapa-11] extracao-protocolo.json não contém servico/fases.observacao.');
-  }
-  console.log(`[etapa-11] Retomando encaminhamento do serviço ${servico} (obs: "${fases.observacao}")`);
 
   const { browser, context } = await abrirBrowser();
   const page = context.pages()[0] ?? await context.newPage();
@@ -1140,20 +1287,51 @@ async function mainEtapa11() {
       await fazerLogin(page, context);
     }
 
-    // Abre o dialog do serviço
-    const linhaServico = page.locator(SEL.SERVICO_LINHAS)
-      .filter({ has: page.locator(SEL.SERVICO_ITEM).filter({ hasText: servico }) })
-      .first();
-    await linhaServico.locator(SEL.SERVICO_ITEM).click();
-    await aguardarAjax(page);
-    await page.locator('[id="formDlgVerServico"]').waitFor({ state: 'visible', timeout: 10000 });
+    if (temBatch) {
+      // ── Modo batch: encaminhar.json ──────────────────────────────────────────
+      let pendentes = JSON.parse(fs.readFileSync(ENCAMINHAR_FILE, 'utf-8'));
+      if (!Array.isArray(pendentes) || pendentes.length === 0) {
+        throw new Error('[etapa-11] encaminhar.json está vazio ou inválido.');
+      }
+      console.log(`[etapa-11] Batch: ${pendentes.length} serviço(s) a encaminhar.`);
 
-    // Garante que estamos na aba Dados Básicos (onde fica o botão Editar)
-    await page.locator(SEL.TAB_DADOS).click();
-    await aguardarAjax(page);
+      while (pendentes.length > 0) {
+        const { servico, observacao, subfase = 'AGUARDAR PROTOCOLO' } = pendentes[0];
+        if (!servico || !observacao) {
+          throw new Error(`[etapa-11] Entrada inválida em encaminhar.json: ${JSON.stringify(pendentes[0])}`);
+        }
+        console.log(`\n[etapa-11] Serviço ${servico} — subfase "${subfase}"...`);
 
-    await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao });
-    console.log('[etapa-11] Encaminhamento concluído.');
+        await abrirServicoESigad(page, servico);
+        await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao, subfase });
+        console.log(`[etapa-11] Serviço ${servico} encaminhado.`);
+
+        pendentes = pendentes.slice(1);
+        fs.writeFileSync(ENCAMINHAR_FILE, JSON.stringify(pendentes, null, 2), 'utf-8');
+
+        if (pendentes.length > 0) {
+          await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+          await aguardarAjax(page);
+        }
+      }
+
+      fs.unlinkSync(ENCAMINHAR_FILE);
+      console.log('[etapa-11] Todos os serviços encaminhados. encaminhar.json removido.');
+
+    } else {
+      // ── Modo retomada: extracao-protocolo.json ───────────────────────────────
+      const extracao = JSON.parse(fs.readFileSync(EXTRACAO_FILE, 'utf-8'));
+      const { servico, fases } = extracao;
+      if (!servico || !fases?.observacao) {
+        throw new Error('[etapa-11] extracao-protocolo.json não contém servico/fases.observacao.');
+      }
+      console.log(`[etapa-11] Retomando encaminhamento do serviço ${servico} (obs: "${fases.observacao}")`);
+
+      await abrirServicoESigad(page, servico);
+      await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao });
+      console.log('[etapa-11] Encaminhamento concluído.');
+    }
+
   } finally {
     console.log('\n[etapa-11] Concluído. Feche o browser quando terminar.');
     await new Promise(() => {});
