@@ -1,7 +1,13 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
-[ENCAMINHAR-EXECUÇÃO]
+[CORREÇÃO-LAUDO] $\green ✔$
+Considere que quando temos a Fase Laudo, a extração do doc não é feita na aba Documentos, e sim na aba Laudos.
+Caso possua alvará (2 docs em Observação), o Alvará continua sendo extraído de Documentos e apenas Laudo é extraído da aba Laudos.
+
+Implemente esta extração em forma de teste-laudo e vamos fazer a verificação do retorno dos dados desta aba.
+
+[ENCAMINHAR-EXECUÇÃO] $\green ✔$
  node src/web/auto-protocolar.js etapa11
 
 Analise como está sendo feita a extração de partes no esaj e vamos fazer a seguinte alteração:
@@ -185,23 +191,23 @@ Caso seja mais fácil, o plugin do gmail ajudaria?
 PETICIONANTE: ÉRIKA PINTO NOGUEIRA (ÉRIKA PINTO NOGUEIRA - Advogado(a))
 
 CLASSIFICAÇÃO:
-|-----------------------+--------------------+-----------+-------------------------|
-|         Fase          |       SubFase      |    Cod    |      Descrição Cod      |
-|-----------------------+--------------------+-----------+-------------------------|
-|        Nomeação       |     Protocolar     |    8822   |  Manifestação do perito | 
-|-----------------------+--------------------+-----------+-------------------------|
-|        Intimação      |     Protocolar     |    8822   |  Manifestação do perito | 
-|-----------------------+--------------------+-----------+-------------------------|
-|       De ofício       |     Protocolar     |    8822   |  Manifestação do perito | 
-|-----------------------+--------------------+-----------+-------------------------|
-|         Laudo         |     Protocolar     |   38368   |         Laudo           |
-|-----------------------+--------------------+-----------+-------------------------|
-|    Esclarecimento     |     Protocolar     |   38368   |  Manifestação do laudo  | 
-|-----------------------+--------------------+-----------+-------------------------|
-|  Laudo/Esclarecimento |     Protocolar-*   |    8822   |  Manifestação do perito | 
-|-----------------------+--------------------+-----------+-------------------------|
-|  Laudo/Esclarecimento |  Protocolar-prazo  |   38423   |     Dilação de prazo    |
-|-----------------------+--------------------+-----------+-------------------------|
+|--------------------------+--------------------+-----------+-------------------------|
+|            Fase          |       SubFase      |    Cod    |      Descrição Cod      |
+|--------------------------+--------------------+-----------+-------------------------|
+|         Nomeação         |     Protocolar     |    8822   |  Manifestação do perito | 
+|--------------------------+--------------------+-----------+-------------------------|
+|         Intimação        |     Protocolar     |    8822   |  Manifestação do perito | 
+|--------------------------+--------------------+-----------+-------------------------|
+|         De ofício        |     Protocolar     |    8822   |  Manifestação do perito | 
+|--------------------------+--------------------+-----------+-------------------------|
+|           Laudo          |     Protocolar     |   38368   |         Laudo           |
+|--------------------------+--------------------+-----------+-------------------------|
+|      Esclarecimento      |     Protocolar     |   38368   |  Manifestação do laudo  | 
+|--------------------------+--------------------+-----------+-------------------------|
+|  Laudo ou Esclarecimento |     Protocolar-*   |    8822   |  Manifestação do perito | 
+|--------------------------+--------------------+-----------+-------------------------|
+|  Laudo ou Esclarecimento |  Protocolar-prazo  |   38423   |     Dilação de prazo    |
+|--------------------------+--------------------+-----------+-------------------------|
 
 *[diligente, inconclusivo, solicitação de documento]
 

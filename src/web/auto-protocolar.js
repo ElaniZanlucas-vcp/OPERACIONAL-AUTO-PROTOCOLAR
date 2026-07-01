@@ -29,9 +29,10 @@ const SEL = {
   SERVICO_ITEM:   'span.Fs14.FontSemiBold',
 
   // Tabs do dialog formDlgVerServico (confirmadas: fluxo-protocolar + encaminhar)
-  TAB_FASES: '[id="formDlgVerServico:tabViewEvento"] a:has-text("Fases")',
-  TAB_DOCS:  '[id="formDlgVerServico:tabViewEvento"] a:not(.ui-commandlink):has-text("Documentos")',
-  TAB_DADOS: '[id="formDlgVerServico:tabViewEvento"] a:has-text("Dados Básicos")',
+  TAB_FASES:  '[id="formDlgVerServico:tabViewEvento"] a:has-text("Fases")',
+  TAB_DOCS:   '[id="formDlgVerServico:tabViewEvento"] a:not(.ui-commandlink):has-text("Documentos")',
+  TAB_LAUDOS: '[id="formDlgVerServico:tabViewEvento"] a:not(.ui-commandlink):has-text("Laudos")',
+  TAB_DADOS:  '[id="formDlgVerServico:tabViewEvento"] a:has-text("Dados Básicos")',
 
   // Linhas das tabelas de fases e documentos (vista)
   FASES_LINHAS: '[id="formDlgVerServico:tabViewEvento:tabListaFase_data"] tr',
@@ -236,6 +237,61 @@ async function extrairDocumentos(page, temAlvara) {
   return documentos;
 }
 
+// ── Etapa 3.1: Acessar Laudos (quando a Fase é Laudo) ────────────────────────
+//
+// Quando a Fase é Laudo, o documento principal não é peticionado a partir da aba
+// Documentos, e sim da aba Laudos — validado via teste-laudo.js. Diferente de
+// Documentos/Fases (p:dataTable com thead/tbody), a aba Laudos é um p:dataGrid
+// (um cartão por laudo, sem colunas), então a extração não usa celulaPorTitulo.
+//
+// O texto do documento não fica dentro de a.ui-commandlink (esse link não carrega
+// texto próprio — inspecionado via recorder.js, o elemento clicado pelo usuário
+// foi um <span> sem id, separado do link de ação/download). Por isso o documento
+// é identificado pelo padrão do próprio código (ex: "L28639_8398": letras +
+// dígitos + "_" + dígitos), varrendo as linhas de texto do cartão.
+
+async function extrairAbaLaudos(page) {
+  const aba = page.locator(SEL.TAB_LAUDOS);
+  if ((await aba.count()) === 0) {
+    console.warn('[etapa-3.1] Aba "Laudos" não encontrada no dialog deste serviço.');
+    return [];
+  }
+
+  console.log('[etapa-3.1] Clicando na aba Laudos...');
+  await aba.click();
+  await aguardarAjax(page);
+  // aguardarAjax só garante fila do PrimeFaces vazia, não que o DOM já refletiu a resposta
+  await page.waitForTimeout(1500);
+
+  const laudos = await page.evaluate(() => {
+    const tabView = document.querySelector('[id="formDlgVerServico:tabViewEvento"]');
+    if (!tabView) return [];
+
+    // Busca direta pelo id fixo do p:dataGrid ("servico") em qualquer profundidade —
+    // evita depender de identificar qual painel do TabView está "ativo".
+    const gridContent = tabView.querySelector('[id$=":servico_content"]');
+    if (!gridContent) return [];
+
+    return [...gridContent.children].map(cartao => {
+      const linhas = cartao.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+
+      const documento = linhas.find(l => /^[A-Za-z]+\d+_\d+$/.test(l)) ?? '';
+
+      const idxConclusao = linhas.findIndex(l => l.startsWith('Data da conclusão'));
+      const responsavelBruto = idxConclusao >= 0 ? (linhas[idxConclusao + 1] || '') : '';
+
+      return {
+        documento,
+        tipoDocumento: 'LAUDO',
+        responsavel: responsavelBruto.replace(/\s*\([^)]*\)\s*$/, '').trim() || null,
+      };
+    }).filter(l => l.documento);
+  });
+
+  console.log(`[etapa-3.1] Laudos encontrados (${laudos.length}): ${JSON.stringify(laudos)}`);
+  return laudos;
+}
+
 // doc1 // doc2 da Fase = doc1, doc2 por ordem de mais recente nos Documentos
 function conferirDocumentos(esperados, encontrados) {
   if (esperados.length !== encontrados.length) return false;
@@ -355,6 +411,15 @@ const SIGLAS_REU = [
   'EMBARGD[OA]',      // embargado/embargada (abrev)
 ].join('|');
 
+// reqdo é o último campo da ORDEM — sem campo seguinte que o feche via INICIO_CAMPO.
+// Quando o documento não tem linha em branco entre o nome da parte e o parágrafo de
+// qualificação do perito/empresa peticionante (boilerplate fixo de toda petição da
+// VCP), o campo "vaza" e absorve o restante da página. Dois freios independentes:
+// 1) marcador textual que sempre abre esse parágrafo; 2) teto de linhas por nome de
+// parte (autor/réu raramente passam de 1-2 linhas no cabeçalho do documento).
+const FIM_QUALIFICACAO_PERITO_RE = /^VINICIUS\s+COUTINHO\b/i;
+const MAX_LINHAS_NOME_PARTE = 3;
+
 // Extrai os campos do cabeçalho do PDF em passo único e na ordem esperada do documento.
 // Cada campo só é procurado após o campo anterior ter sido encontrado (ou descartado),
 // impedindo que "AÇÃO" seja capturada de "CERTIFICAÇÃO" no corpo ou de menções tardias.
@@ -389,14 +454,24 @@ function extrairCamposSequenciais(linhas) {
 
   for (const linha of linhas) {
     const trimmed = linha.trim();
+    const ehNomeParte = capturandoKey === 'reqte' || capturandoKey === 'reqdo';
 
     if (capturandoKey) {
-      if (INICIO_CAMPO.test(trimmed)) {
+      if (ehNomeParte && FIM_QUALIFICACAO_PERITO_RE.test(trimmed)) {
+        // Início do parágrafo de qualificação do perito — nunca é parte do nome.
+        fecharCampo();
+        continue;
+      } else if (INICIO_CAMPO.test(trimmed)) {
         fecharCampo();
         // cai para verificar se esta linha inicia novo campo
       } else if (!trimmed) {
         if (!continueOnBlank) fecharCampo();
         continue; // linha em branco: fecha (ou ignora) e não tenta abrir novo campo
+      } else if (ehNomeParte && partes.length >= MAX_LINHAS_NOME_PARTE) {
+        // Nome de parte improvavelmente continua por tantas linhas sem separador —
+        // provável vazamento para o corpo do documento. Encerra sem incluir mais.
+        fecharCampo();
+        continue;
       } else {
         partes.push(trimmed);
         continue;
@@ -625,6 +700,7 @@ function normalizar(str) {
     .replace(/&amp;/gi, '&')              // decodifica entidade HTML (&AMP; do ESAJ)
     .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove acentos
     .toUpperCase()
+    .replace(/\bIMISSAO (DE|NA) POSSE\b/g, 'IMISSAO POSSE') // "Imissão de Posse" == "Imissão na Posse" (classe)
     .replace(/\/[A-Z]{2,3}\.?\s*$/, '')  // remove /MS. /MT. /SP. no final (foro)
     .replace(/\bS\/A\b/g, 'SA')          // S/A → SA antes de converter barras
     .replace(/\//g, ' ')                  // barras restantes → espaço
@@ -892,7 +968,9 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
 
 function resolverCodigoClassificacao(fase, subfase) {
   const f = fase.toUpperCase().trim();
-  const s = subfase.toUpperCase().trim();
+  // SIGAD retorna a subfase com espaços ao redor do hífen (ex: "PROTOCOLAR - PRAZO") —
+  // normaliza para "PROTOCOLAR-PRAZO" antes de comparar.
+  const s = subfase.toUpperCase().trim().replace(/\s*-\s*/g, '-');
   if (s === 'PROTOCOLAR-PRAZO')  return 38423;
   if (s.startsWith('PROTOCOLAR-')) return 8822;
   if (s === 'PROTOCOLAR') {
@@ -990,7 +1068,7 @@ async function preencherDadosPeticao(esajAba, codigo) {
 }
 
 
-async function importarDocumentoESAJ(esajAba, filePath) {
+async function importarDocumentoESAJ(esajAba, filePath, { timeoutCarregamento = 3000 } = {}) {
   console.log(`[etapa-8] Enviando arquivo: ${path.basename(filePath)}`);
   // Dois botões com id "botaoAdicionarDocumento" — diferencia por aria-label
   const btnDoc = esajAba.locator('[aria-label="Adicionar arquivos elaborados"]');
@@ -1000,7 +1078,8 @@ async function importarDocumentoESAJ(esajAba, filePath) {
     btnDoc.click(),
   ]);
   await fileChooser.setFiles(filePath);
-  await new Promise(r => setTimeout(r, 3000));
+  console.log(`[etapa-8] Aguardando carregamento do arquivo (${timeoutCarregamento}ms)...`);
+  await new Promise(r => setTimeout(r, timeoutCarregamento));
   console.log('[etapa-8] Arquivo carregado.');
 }
 
@@ -1053,6 +1132,12 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
     : [documentosEsperados[0]];
   const codigos = [codigo, 38380];
 
+  // Fase Laudo: timeout maior no import do documento principal (Laudo) para
+  // conferirmos visualmente que o arquivo carrega corretamente no ESAJ.
+  const faseELaudo = /LAUDO/i.test(fase);
+  const TIMEOUT_IMPORT_PADRAO = 3000;
+  const TIMEOUT_IMPORT_LAUDO  = 10000;
+
   console.log(`[peticionar] Fase: ${fase} | Subfase: ${subfase} | Código: ${codigo} | Total docs: ${docs.length}`);
 
   let abaAtual = esajAba;
@@ -1071,7 +1156,8 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
     const filePath = path.join(pastaRecente, docs[i] + '.pdf');
 
     await abrirFormularioPeticao(abaAtual);
-    await importarDocumentoESAJ(abaAtual, filePath);
+    const timeoutCarregamento = (faseELaudo && i === 0) ? TIMEOUT_IMPORT_LAUDO : TIMEOUT_IMPORT_PADRAO;
+    await importarDocumentoESAJ(abaAtual, filePath, { timeoutCarregamento });
     await preencherDadosPeticao(abaAtual, codigos[i]);
 
     console.log(`[etapa-10] Salvando petição (${label})...`);
@@ -1124,8 +1210,24 @@ async function processarServico(page, context, servicoAlvo = null) {
   extracao.fases = fases;
   salvarExtracao(extracao);
 
-  // Etapa 3 — Documentos
-  const documentosEncontrados = await extrairDocumentos(page, fases.temAlvara);
+  // Etapa 3 — Documentos (e Laudos, quando a Fase é Laudo)
+  const faseELaudo = /LAUDO/i.test(fases.fase);
+  const documentosBrutos = await extrairDocumentos(page, fases.temAlvara);
+
+  let documentosEncontrados;
+  if (faseELaudo) {
+    // O documento principal (Laudo) não aparece em Documentos — vem da aba Laudos.
+    // Com Alvará, ele é identificado por tipoDocumento (não pela posição — a linha
+    // mais recente em Documentos pode ser um doc antigo/irrelevante de outra fase).
+    const alvara = fases.temAlvara
+      ? documentosBrutos.filter(d => d.tipoDocumento.toUpperCase().includes('ALVARA'))
+      : [];
+    const laudos = await extrairAbaLaudos(page);
+    documentosEncontrados = laudos[0] ? [laudos[0], ...alvara] : alvara;
+  } else {
+    documentosEncontrados = documentosBrutos;
+  }
+
   const confere = conferirDocumentos(fases.documentosEsperados, documentosEncontrados);
   extracao.documentos = { encontrados: documentosEncontrados, confere };
   salvarExtracao(extracao);
@@ -1413,6 +1515,7 @@ module.exports = {
   processarServico,
   extrairFases,
   extrairDocumentos,
+  extrairAbaLaudos,
   conferirDocumentos,
   abrirProcessoNoESAJ,
   localizarPastaServico,
