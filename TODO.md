@@ -1,12 +1,21 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
-[28.555, 28.446, 28.267, 28.093, 27.862, 10.394] -> LAUDOS
+
+[ROTINA-EXECUÇÃO]: 9h30, 11h40, 15h40
 
 
-[SEM-PROTOCOLAR-LAUDO]
- Crie um modo em auto-protocolar de protocolar APENAS o laudo. Considere que o Alvará já foi protocolado. Vamos enviar o nome do Serviço para que seja pesquisado na aba de Serviços (url
-  https://sistemas.vcpericia.com.br/sigad/usuario/servico/index.xhtml) e a partir dele, vamos seguir o fluxo já existente. Vamos utilizar um recorder.js para criarmos este fluxograma.
+[MARKDOWN-RETORNO] $\green ✔$
+Vamos criar um markdown execucao.md ou qualquer outro nome com o seguinte formato:
+- Executados: lista de todos os Serviços em pending.json
+- Pontos de atenção: lista de todos os Serviços que geraram divergências com suas respectivas divergências. 
+
+[LIMITE-LAUDO]
+O esaj possui um tamanho limite para o import no documento (29,99 MB), o que pode gerar problemas na hora de protocolar.
+Vamos considerar que este erro pode acontecer apenas com o documento de Laudo por ser um documento grande. Portanto, é preciso verificar o tamanho do documento que for extraído da aba de Laudos.
+Caso exceda o tamanho, faça o fluxo de Encaminhar -> Protocolar e adicione como divergência em execucao.md
+
+
 
 
 
@@ -209,7 +218,7 @@ CLASSIFICAÇÃO:
 |--------------------------+--------------------+-----------+-------------------------|
 |         De ofício        |     Protocolar     |    8822   |  Manifestação do perito | 
 |--------------------------+--------------------+-----------+-------------------------|
-|           Laudo          |     Protocolar     |   38368   |         Laudo           |
+|           Laudo          |     Protocolar     |   38369   |         Laudo           |
 |--------------------------+--------------------+-----------+-------------------------|
 |      Esclarecimento      |     Protocolar     |   38368   |  Manifestação do laudo  | 
 |--------------------------+--------------------+-----------+-------------------------|

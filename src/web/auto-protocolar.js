@@ -16,6 +16,7 @@ const ESAJ_LOGIN_URL   = 'https://esaj.tjms.jus.br/sajcas/login/aba-certificado'
 const EXTRACAO_FILE    = path.resolve(__dirname, '../../data/extracao-protocolo.json');
 const PENDING_FILE     = path.resolve(__dirname, '../../data/pending.json');
 const ENCAMINHAR_FILE  = path.resolve(__dirname, '../../data/encaminhar.json');
+const EXECUCAO_FILE    = path.resolve(__dirname, '../../execucao.md');
 const TRABALHOS_FINAIS = process.env.TRABALHOS_FINAIS;
 
 const ENCAMINHAR_NOME     = 'Dayane Franco Alves';
@@ -1033,7 +1034,8 @@ function resolverCodigoClassificacao(fase, subfase) {
   if (s === 'PROTOCOLAR-PRAZO')  return 38423;
   if (s.startsWith('PROTOCOLAR-')) return 8822;
   if (s === 'PROTOCOLAR') {
-    if (f === 'LAUDO' || f === 'ESCLARECIMENTO') return 38368;
+    if (f === 'LAUDO') return 38369;
+    if (f === 'ESCLARECIMENTO') return 38368;
     return 8822;
   }
   return null;
@@ -1502,11 +1504,58 @@ async function mainEtapa11() {
   }
 }
 
+// ── Relatório de execução (execucao.md) ──────────────────────────────────────
+
+// "Ponto de atenção" = qualquer serviço que não terminou ok (resultado.ok === false),
+// cobrindo todas as etapas que caem para subfase PROTOCOLAR: Etapa 3 (documentos não
+// conferem), Etapa 5 (PDF não encontrado/pasta ausente) e Etapa 7 (dados divergem do
+// ESAJ). Quando a Etapa 7 rodou, detalha os campos que não bateram (conferencia.campos).
+function gerarRelatorioExecucao(servicosDoLote, relatorioExecucao) {
+  if (servicosDoLote.length === 0) return;
+
+  const linhas = [];
+  linhas.push(`# Execução — ${new Date().toLocaleString('pt-BR')}`);
+  linhas.push('');
+  linhas.push('## Executados');
+  linhas.push('');
+  for (const servico of servicosDoLote) {
+    linhas.push(`- ${servico}`);
+  }
+  linhas.push('');
+  linhas.push('## Pontos de Atenção');
+  linhas.push('');
+
+  const comAtencao = relatorioExecucao.filter(r => r.resultado?.ok === false);
+  if (comAtencao.length === 0) {
+    linhas.push('_Nenhuma divergência._');
+  } else {
+    for (const { servico, resultado } of comAtencao) {
+      linhas.push(`### ${servico}`);
+      linhas.push('');
+      linhas.push(`- **Motivo:** ${resultado.motivo ?? 'não informado'}`);
+      const divergencias = resultado.conferencia?.campos?.filter(c => !c.bate) ?? [];
+      if (divergencias.length > 0) {
+        linhas.push('- **Campos divergentes:**');
+        for (const d of divergencias) {
+          linhas.push(`  - \`${d.campo}\`: doc="${d.doc}" | esaj="${d.esaj}"`);
+        }
+      }
+      linhas.push('');
+    }
+  }
+
+  fs.writeFileSync(EXECUCAO_FILE, linhas.join('\n'), 'utf-8');
+  console.log(`[auto-protocolar] Relatório de execução salvo em ${EXECUCAO_FILE}`);
+}
+
 // ── Fluxo principal ───────────────────────────────────────────────────────────
 
 async function main() {
   const { browser, context } = await abrirBrowser();
   const page = context.pages()[0] ?? await context.newPage();
+
+  let servicosDoLote = [];
+  const relatorioExecucao = [];
 
   try {
     // 1. Login ESAJ
@@ -1537,12 +1586,14 @@ async function main() {
       console.log(`[auto-protocolar] ${pendentes.length} serviços em pending.json (${excluidos} excluído${excluidos !== 1 ? 's' : ''}).`);
       console.log(`[auto-protocolar] Pendentes: ${JSON.stringify(pendentes)}`);
     }
+    servicosDoLote = [...pendentes];
 
     // 4. Loop principal
     for (const servicoAlvo of [...pendentes]) {
       console.log(`\n[auto-protocolar] ══ Processando: ${servicoAlvo} ══`);
       const resultado = await processarServico(page, context, servicoAlvo);
       console.log('[auto-protocolar] Resultado:', JSON.stringify(resultado, null, 2));
+      relatorioExecucao.push({ servico: servicoAlvo, resultado });
 
       pendentes = pendentes.filter(s => s !== servicoAlvo);
       fs.writeFileSync(PENDING_FILE, JSON.stringify(pendentes, null, 2), 'utf-8');
@@ -1557,6 +1608,7 @@ async function main() {
     console.error(err.stack);
     console.log('[auto-protocolar] pending.json preservado para retomada.');
   } finally {
+    gerarRelatorioExecucao(servicosDoLote, relatorioExecucao);
     console.log('\n[auto-protocolar] Concluído. Feche o browser quando terminar.');
     await new Promise(() => {});
   }

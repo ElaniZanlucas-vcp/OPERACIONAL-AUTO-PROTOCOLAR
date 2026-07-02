@@ -1,6 +1,8 @@
 # Dependências
 node_modules/
 
+execucao.md
+
 # Ambiente e credenciais
 .env
 

@@ -22,9 +22,13 @@ node src/web/auto-protocolar.js
 │ ║      Observação = docs esperados (separados por //)              ║
 │ ║      Sem fases → pula serviço                                    ║
 │ ║                                                                  ║
-│ ║  [Etapa 3]  Aba Documentos ───────────────────────────── ✔      ║
+│ ║  [Etapa 3]  Aba Documentos (ou Laudos, se Fase Laudo) ──── ✔    ║
 │ ║      Extrai 1 ou 2 docs mais recentes (2 se há Alvará)           ║
 │ ║      Reordena: Alvará (Tipo Documento) sempre em índice 1        ║
+│ ║      Fase Laudo + Subfase PROTOCOLAR (exata) →                   ║
+│ ║        doc principal vem da aba Laudos, não Documentos           ║
+│ ║      Fase Laudo + Subfase PROTOCOLAR-[subtipo] →                 ║
+│ ║        não busca laudo; segue fluxo normal de Documentos         ║
 │ ║      Não confere com Observação da Fase →                        ║
 │ ║        encaminha c/ subfase PROTOCOLAR (não pula mais)           ║
 │ ║                                                                  ║
@@ -33,8 +37,11 @@ node src/web/auto-protocolar.js
 │ ║                                                                  ║
 │ ║  [Etapa 5]  Localizar pasta no servidor ───────────────── ✔     ║
 │ ║      TRABALHOS_FINAIS/<servico>/<subpasta_mais_recente>/         ║
+│ ║      Mais recente = maior data no NOME da subpasta               ║
+│ ║      (mtime do arquivo só é usado como desempate/fallback)       ║
 │ ║      Extrai cabeçalho da 1ª pág do PDF (state machine seq.):     ║
 │ ║      vara, foro, n° processo, classe, reqte (autor), reqdo (réu) ║
+│ ║      Corrige mojibake de fonte MacRoman/Win-1252, se detectado   ║
 │ ║      Pasta/PDF não encontrado →                                  ║
 │ ║        encaminha c/ subfase PROTOCOLAR                           ║
 │ ║                                                                  ║
@@ -70,7 +77,7 @@ node src/web/auto-protocolar.js
 │ ║                                                                  ║
 │ ╚══════════════════════════════════════════════════════════════════╝
 │
-└─ [Limpeza] ─────────────── pending.json removido ao final do loop  ✔
+└─ [Limpeza] ─── pending.json removido + execucao.md gerado (ver 3.14) ✔
 
 [FIM]
 ```
@@ -104,6 +111,7 @@ node src/web/auto-protocolar.js
 | `src/web/crawler.js` | Filtra tabela, extrai todas as páginas → `data/resultados.json` |
 | `src/web/recorder.js` | Grava interações na guia de processo para mapear seletores |
 | `src/web/teste-partes.js` | Utilitário isolado: testa `extrairPartesDoESAJ`/`extrairCabecalhoDoESAJ` contra uma lista fixa de processos (`PROCESSOS_ALVO`), sem depender do SIGAD |
+| `src/web/teste-laudo.js` | Utilitário isolado: testa a extração da aba Laudos/Documentos contra uma lista fixa de serviços (`SERVICOS_ALVO`) |
 | `src/server/sincronizador.js` | Upload SFTP ao servidor (stub) |
 | `main.js` | ⚠ Stub legado (`npm run pre`) — chama `login()` de `auth.js`, que não é mais exportado (`fazerLogin`/`loadSession`). Quebrado; não usar |
 
@@ -147,6 +155,16 @@ Clica na aba Documentos. Extrai 1 ou 2 documentos mais recentes (Documento, Tipo
 - **Responsável** só é mantido para o documento principal (índice 0); zerado (`null`) nos demais.
 - Confere se os nomes batem (lowercase `includes`) com os da Observação — caso contrário **não pula mais o serviço**: encaminha no SIGAD com subfase `PROTOCOLAR` (ver 3.7) e segue para o próximo serviço.
 
+**Fase Laudo — de onde vem o documento principal:** quando `fases.fase` contém "Laudo", a origem do documento principal depende da **Subfase exata** (`buscarLaudo` em `processarServico`):
+- Subfase `PROTOCOLAR` (sem sufixo) → o documento principal **não** vem da aba Documentos, vem da aba Laudos (`extrairAbaLaudos()`), validado via `teste-laudo.js` (ver 3.13).
+- Subfase `PROTOCOLAR-[subtipo]` (ex: `PROTOCOLAR - PRAZO`, normalizada removendo espaços ao redor do hífen — mesmo padrão de `resolverCodigoClassificacao`) → **não busca laudo**; segue o fluxo normal de Documentos, igual às demais Fases — esses subtipos não têm laudo a protocolar.
+
+**Aba Laudos — estrutura (`extrairAbaLaudos`):** diferente de Documentos/Fases (`p:dataTable` com thead/tbody), a aba Laudos é um `p:dataGrid` — um cartão `.ui-panel` por laudo, sem colunas:
+- A extração localiza o grid pelo id fixo `[id$=":servico_content"]` (estável entre deploys, ao contrário dos `j_idt*` internos de cada cartão) — evita depender de identificar qual painel de aba está "ativo".
+- O texto de cada cartão é lido via `innerText` do nó vivo no DOM — nunca `textContent` de um clone destacado, que retorna vazio por não ter layout renderizado.
+- O código do documento (ex: `L28639_8398`) não fica dentro de `a.ui-commandlink` (esse link não carrega texto próprio); é identificado por padrão (`/^[A-Za-z]+\d+_\d+$/`) varrendo as linhas de texto do cartão.
+- **Com Alvará:** `extrairDocumentos` ainda busca os 2 documentos mais recentes normalmente, mas só a entrada com `tipoDocumento` contendo "ALVARA" é aproveitada — **não assumir que a linha mais recente em Documentos é o Alvará**: pode ser um documento antigo/irrelevante de outra fase (ex: "PRAZO"), com o Alvará na 2ª posição.
+
 ---
 
 ### 3.4 Etapa 4 — Dados Básicos → ESAJ
@@ -158,8 +176,9 @@ Clica na aba Dados Básicos e localiza o span com o n° de processo (`/\d{7}-\d{
 ### 3.5 Etapa 5 — Servidor (Trabalhos Finais)
 
 - Lê `TRABALHOS_FINAIS` do `.env`.
-- Abre `<TRABALHOS_FINAIS>/<numero_servico_sem_pontos>/` e seleciona a subpasta mais recente (por `mtime`).
+- Abre `<TRABALHOS_FINAIS>/<numero_servico_sem_pontos>/` e seleciona a subpasta mais recente. **A data no nome da subpasta é a fonte da verdade** (ex: `2026.07.01` > `2026.04.06`) — `mtime` do arquivo só é usado como fallback/desempate (quando o nome não é parseável como data, ou entre nomes com a mesma data). Cópias/sincronizações em lote podem gravar `mtime` fora de ordem cronológica (uma pasta mais antiga por nome pode ter `mtime` mais novo), por isso confiar só no `mtime` já causou a seleção da pasta errada em produção.
 - Usa `pdf-parse` (`{ max: 1 }`) para ler apenas a 1ª página do PDF, normaliza `text.normalize('NFC')` (recompõe acentos decompostos) e extrai os campos via `extrairCamposSequenciais()`.
+- **Correção de mojibake (fonte MacRoman/Win-1252):** alguns PDFs de Laudo embutem uma fonte cuja tabela de glifos é MacRoman, mas o `pdf-parse` decodifica os bytes como Windows-1252 — todo caractere acentuado sai trocado por um símbolo tipográfico (`Í→Õ`, `Ç→«`, `Ã→√`, `ª→™` etc.), quebrando os campos `vara`/`foro`/`classe`. `corrigirMojibakeMacRoman()` detecta a corrupção pela presença de símbolos impossíveis em português (`√ ∫ ∆ ¬ ƒ ≈ ¿ ¡ ˆ ˜ ¯ ˘ ˙ ˚ ¸ ˝ ˛ ˇ ∏ ∑ ∂ Ω ı „ ™`) e, se presente, reverte o documento inteiro pela tabela MacRoman→Win-1252 antes do parsing (ver [[project_pdf_mojibake_macroman]]).
 - Falha ao localizar pasta/PDF → não pula mais o serviço: encaminha no SIGAD com subfase `PROTOCOLAR` e segue para o próximo.
 
 **`extrairCamposSequenciais()` — máquina de estados sequencial:**
@@ -266,6 +285,44 @@ Script standalone (não integrado ao fluxo principal) para validar `extrairParte
 
 ---
 
+### 3.13 `teste-laudo.js` — utilitário de diagnóstico
+
+Script standalone (não integrado ao fluxo principal) para validar a extração da aba Laudos/Documentos contra serviços reais:
+- Edite o array `SERVICOS_ALVO` no topo do arquivo com números de serviço cuja Fase seja "Laudo".
+- Roda o mesmo fluxo de `auto-protocolar.js` para Fases (`extrairFases`) e Documentos (`extrairDocumentos`), depois avança para a aba Laudos e reusa a extração descrita em 3.3.
+- Salva o resultado consolidado (Fases, Documentos filtrados e Laudos por serviço) em `data/teste-laudo-resultado.json`.
+- Em falha ao localizar o `p:dataGrid` no DOM, grava um diagnóstico à parte em `data/debug_laudos_falha_<servico>.json`.
+- Mantém o browser aberto ao final para inspeção manual.
+
+---
+
+### 3.14 Relatório de Execução (`execucao.md`)
+
+Ao final do fluxo completo (`main()`), `gerarRelatorioExecucao()` grava `execucao.md` na raiz do projeto (sobrescrito a cada execução; gerado no bloco `finally`, mesmo se o loop for interrompido por erro):
+
+- **Executados** — todos os serviços do lote (o `pending.json` capturado no início da execução, seja novo ou retomado).
+- **Pontos de Atenção** — subconjunto dos executados cujo `resultado.ok === false`, com o **Motivo** (documentos não conferem na Etapa 3, PDF/pasta não encontrado na Etapa 5, ou dados divergem na Etapa 7) e, quando a Etapa 7 rodou, os **campos divergentes** (`doc="..."` vs `esaj="..."`).
+
+Exemplo:
+```markdown
+# Execução — 02/07/2026, 11:34:54
+
+## Executados
+
+- 27.693
+- 29.555
+
+## Pontos de Atenção
+
+### 27.693
+
+- **Motivo:** dados divergem entre documento e ESAJ
+- **Campos divergentes:**
+  - `reu`: doc="NEWE SEGUROS S.A" | esaj="NEWS SEGUROS S/A"
+```
+
+---
+
 ## 4. Stubs Pendentes
 
 | Módulo | Status | Pendência |
@@ -285,6 +342,7 @@ Script standalone (não integrado ao fluxo principal) para validar `extrairParte
 | `encaminhar.json` | manual (entrada) | Lista `[{ servico, observacao, subfase? }]` para o submodo batch de `etapa11`; consumido item a item e apagado ao fim (ver 3.11) |
 | `recording.json` | `recorder.js` | Interações + navegações gravadas na guia ESAJ |
 | `teste-partes-resultado.json` | `teste-partes.js` | Partes + cabeçalho extraídos para cada processo em `PROCESSOS_ALVO` |
+| `teste-laudo-resultado.json` | `teste-laudo.js` | Fases, Documentos filtrados e Laudos extraídos para cada serviço em `SERVICOS_ALVO` |
 | `chrome-profile/` | `crawler.js` (`abrirBrowser`) | Perfil persistente do Chromium — clone do perfil real do Chrome do usuário (certificado, extensões, login Google) |
 | `debug_<label>.png` / `.json` | `crawler.js` (`debugPagina`) | Screenshot + IDs visíveis na página, capturados em timeouts de seletor (ex: filtro Situação) para diagnóstico |
 
@@ -299,9 +357,10 @@ Script standalone (não integrado ao fluxo principal) para validar `extrairParte
 - Coluna Processo (link ESAJ): `formServico:tabela:j_idt331` ou `j_idt367`
 
 **Dialog do serviço — Etapas 2-4:**
-- Abas: `formDlgVerServico:tabViewEvento` → `a:has-text("Fases" | "Documentos" | "Dados Básicos")`
+- Abas: `formDlgVerServico:tabViewEvento` → `a:has-text("Fases" | "Documentos" | "Laudos" | "Dados Básicos")`
 - Tabela fases: `formDlgVerServico:tabViewEvento:tabListaFase_data`
 - Tabela documentos: `formDlgVerServico:tabViewEvento:tabListaDocumento_data`
+- Grid de laudos (`p:dataGrid`, sem thead/tbody): `formDlgVerServico:tabViewEvento:servico_content` — id "servico" é fixo, só os `j_idt*` internos de cada cartão mudam entre deploys.
 
 **Etapa 11 — Encaminhar (cascata de IDs conhecidos + fallback por DOM/texto, ver 3.9):**
 - Botão Editar: `[id="formDlgVerServico"] span.ui-button-text:has-text("Editar")`
@@ -362,6 +421,9 @@ npm run recorder
 # Teste isolado de extração de partes do ESAJ (edite PROCESSOS_ALVO antes)
 node src/web/teste-partes.js
 npm run teste-partes
+
+# Teste isolado de extração da aba Laudos/Documentos no SIGAD (edite SERVICOS_ALVO antes)
+node src/web/teste-laudo.js
 ```
 
 ---
@@ -378,4 +440,5 @@ npm run teste-partes
 | `[esaj]` | `src/web/auto-protocolar.js` — login ESAJ |
 | `[recorder]` | `src/web/recorder.js` |
 | `[partes]` / `[processo]` / `[teste-partes]` | `src/web/teste-partes.js` |
+| `[servico]` / `[teste-laudo]` | `src/web/teste-laudo.js` |
 | `[sincronizador]` | `src/server/sincronizador.js` |
