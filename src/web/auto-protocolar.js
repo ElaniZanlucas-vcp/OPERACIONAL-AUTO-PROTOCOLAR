@@ -349,6 +349,30 @@ async function abrirProcessoNoESAJ(page, context) {
 
 // ── Etapa 5: Localizar pasta do serviço no servidor ──────────────────────────
 
+// Nome da subpasta codifica a data (ex: "2026.04.06" = 06/04/2026, "2014.12" = 12/2014).
+// Retorna null se o nome não for puramente numérico separado por . - ou _ (não é uma data).
+function parseDataPasta(nome) {
+  const partes = nome.split(/[.\-_]/).map(Number);
+  return partes.every(n => Number.isFinite(n)) ? partes : null;
+}
+
+// Mais recente primeiro. A data no nome é a fonte da verdade (é ela quem representa
+// quando o trabalho foi feito) — mtime do arquivo entra só como desempate/fallback,
+// pois cópias e sincronizações em lote podem gravar mtimes fora de ordem cronológica
+// (ex: pasta de abril com mtime alguns segundos mais novo que a de julho).
+function compararPastas(a, b) {
+  const da = parseDataPasta(a.name);
+  const db = parseDataPasta(b.name);
+  if (da && db) {
+    const len = Math.max(da.length, db.length);
+    for (let i = 0; i < len; i++) {
+      const diff = (db[i] ?? 0) - (da[i] ?? 0);
+      if (diff !== 0) return diff;
+    }
+  }
+  return b.mtime - a.mtime;
+}
+
 function localizarPastaServico(servico) {
   // "29.872" → "29872"
   const numero = servico.replace(/\./g, '');
@@ -364,7 +388,7 @@ function localizarPastaServico(servico) {
       const fullPath = path.join(pastaServico, e.name);
       return { name: e.name, path: fullPath, mtime: fs.statSync(fullPath).mtimeMs };
     })
-    .sort((a, b) => b.mtime - a.mtime);
+    .sort(compararPastas);
 
   if (subpastas.length === 0) {
     throw new Error(`[etapa-5] Nenhuma subpasta encontrada em: ${pastaServico}`);
@@ -497,6 +521,40 @@ function extrairCamposSequenciais(linhas) {
   return resultado;
 }
 
+// Alguns PDFs de Laudo são gerados com uma fonte cuja tabela de glifos é MacRoman,
+// mas o pdf-parse decodifica os bytes como se fossem Windows-1252 — todo caractere
+// acentuado (Í, Ç, Ã, ª, ã, ç, õ, ô, º etc.) sai substituído por um símbolo tipográfico
+// (√, «, ™, „, Á, ı, ∫...). ASCII puro (REQTE, AUTOS, COMARCA) não é afetado, por isso
+// a corrupção só aparece nos campos com acento. Ver [[project_pdf_mojibake_macroman]].
+const MAC_ROMAN_HIGH = [
+  'Ä','Å','Ç','É','Ñ','Ö','Ü','á','à','â','ä','ã','å','ç','é','è','ê','ë','í','ì','î','ï','ñ','ó','ò','ô','ö','õ','ú','ù','û','ü',
+  '†','°','¢','£','§','•','¶','ß','®','©','™','´','¨','≠','Æ','Ø','∞','±','≤','≥','¥','µ','∂','∑','∏','π','∫','ª','º','Ω','æ','ø',
+  '¿','¡','¬','√','ƒ','≈','∆','«','»','…',' ','À','Ã','Õ','Œ','œ','–','—','“','”','‘','’','÷','◊','ÿ','Ÿ','⁄','€','‹','›','ﬁ','ﬂ',
+  '‡','·','‚','„','‰','Â','Ê','Á','Ë','È','Í','Î','Ï','Ì','Ó','Ô','','Ò','Ú','Û','Ù','ı','ˆ','˜','¯','˘','˙','˚','¸','˝','˛','ˇ',
+];
+const WIN1252_0x80_0x9F = [
+  '€', undefined, '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', undefined, 'Ž', undefined,
+  undefined, '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', undefined, 'ž', 'Ÿ',
+];
+const MOJIBAKE_MAC_ROMAN_MAP = new Map();
+for (let byte = 0x80; byte <= 0xFF; byte++) {
+  const garbled = MAC_ROMAN_HIGH[byte - 0x80];
+  const correto = byte < 0xA0 ? WIN1252_0x80_0x9F[byte - 0x80] : String.fromCharCode(byte);
+  if (garbled && correto) MOJIBAKE_MAC_ROMAN_MAP.set(garbled, correto);
+}
+// Símbolos que a tabela MacRoman produz no lugar de acentos comuns (Ç→«, Ã→√, ª→™,
+// ã→„, õ→ı, º→∫...) e que não ocorrem em português normal — presença de qualquer um
+// indica corrupção do documento inteiro (mesma fonte na página toda).
+const MOJIBAKE_ASSINATURA_RE = /[√∫∆¬ƒ≈¿¡ˆ˜¯˘˙˚¸˝˛ˇ∏∑∂Ωı„™]/;
+
+function corrigirMojibakeMacRoman(texto) {
+  if (!MOJIBAKE_ASSINATURA_RE.test(texto)) return texto;
+  console.warn('[etapa-5] Corrupção de encoding (fonte MacRoman/Win-1252) detectada no PDF — corrigindo acentuação.');
+  let corrigido = '';
+  for (const ch of texto) corrigido += MOJIBAKE_MAC_ROMAN_MAP.get(ch) ?? ch;
+  return corrigido;
+}
+
 async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   const nomeLower = nomeDocumento.toLowerCase();
   const arquivo = fs.readdirSync(pastaRecente).find(f =>
@@ -511,7 +569,8 @@ async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   console.log(`[etapa-5] Lendo PDF: ${caminho}`);
 
   const buffer = fs.readFileSync(caminho);
-  const { text } = await pdfParse(buffer, { max: 1 }); // 1ª página
+  const { text: textoBruto } = await pdfParse(buffer, { max: 1 }); // 1ª página
+  const text = corrigirMojibakeMacRoman(textoBruto);
 
   // NFC: recompõe caracteres decompostos (ex: I+combining acute → Í) para que os regexes casem
   const linhas = text.normalize('NFC').split('\n');
@@ -1210,12 +1269,15 @@ async function processarServico(page, context, servicoAlvo = null) {
   extracao.fases = fases;
   salvarExtracao(extracao);
 
-  // Etapa 3 — Documentos (e Laudos, quando a Fase é Laudo)
-  const faseELaudo = /LAUDO/i.test(fases.fase);
+  // Etapa 3 — Documentos (e Laudos, quando a Fase é Laudo com subfase PROTOCOLAR exata)
+  // Subfase "PROTOCOLAR-[subtipo]" (ex: "PROTOCOLAR - PRAZO") não busca o laudo —
+  // segue o fluxo normal de Documentos, igual às demais Fases.
+  const subfaseNormalizada = fases.subfase.toUpperCase().trim().replace(/\s*-\s*/g, '-');
+  const buscarLaudo = /LAUDO/i.test(fases.fase) && subfaseNormalizada === 'PROTOCOLAR';
   const documentosBrutos = await extrairDocumentos(page, fases.temAlvara);
 
   let documentosEncontrados;
-  if (faseELaudo) {
+  if (buscarLaudo) {
     // O documento principal (Laudo) não aparece em Documentos — vem da aba Laudos.
     // Com Alvará, ele é identificado por tipoDocumento (não pela posição — a linha
     // mais recente em Documentos pode ser um doc antigo/irrelevante de outra fase).

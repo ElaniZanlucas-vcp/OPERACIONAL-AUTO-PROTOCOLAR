@@ -1,6 +1,15 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
+[28.555, 28.446, 28.267, 28.093, 27.862, 10.394] -> LAUDOS
+
+
+[SEM-PROTOCOLAR-LAUDO]
+ Crie um modo em auto-protocolar de protocolar APENAS o laudo. Considere que o Alvará já foi protocolado. Vamos enviar o nome do Serviço para que seja pesquisado na aba de Serviços (url
+  https://sistemas.vcpericia.com.br/sigad/usuario/servico/index.xhtml) e a partir dele, vamos seguir o fluxo já existente. Vamos utilizar um recorder.js para criarmos este fluxograma.
+
+
+
 [CORREÇÃO-LAUDO] $\green ✔$
 Considere que quando temos a Fase Laudo, a extração do doc não é feita na aba Documentos, e sim na aba Laudos.
 Caso possua alvará (2 docs em Observação), o Alvará continua sendo extraído de Documentos e apenas Laudo é extraído da aba Laudos.
