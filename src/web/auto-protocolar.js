@@ -406,34 +406,34 @@ function localizarPastaServico(servico) {
 // Rótulos de autor/réu por tipo de processo — abreviados e por extenso, inclusive feminino.
 // Masculino/feminino nos rótulos de réu unificados com [OA] (ex: EXECUTAD[OA]).
 const SIGLAS_AUTOR = [
-  'REQTE',          // requerente
-  'EXEQTE',         // exequente (abrev)
-  'EXEQUENTE',      // exequente (extenso)
-  'LIQUIDANTE',     // liquidação
-  'LIQTE',          // liquidante (abrev)
-  'INVENTARIANTE',  // inventário
-  'IMPUGNANTE',     // impugnação
-  'IMPUGTE',        // impugnante (abrev)
-  'RECONVINTE',     // reconvenção
-  'RECONVTE',       // reconvinte (abrev)
-  'EMBARGANTE',     // embargos
-  'EMBARGTE',       // embargante (abrev)
+  'REQTES?',          // requerente / requerentes
+  'EXEQTES?',         // exequente (abrev) / exequentes
+  'EXEQUENTES?',      // exequente (extenso) / exequentes
+  'LIQUIDANTES?',     // liquidante / liquidantes
+  'LIQTES?',          // liquidante (abrev) / liquidantes
+  'INVENTARIANTES?',  // inventariante / inventariantes
+  'IMPUGNANTES?',     // impugnação / impugnantes
+  'IMPUGTES?',        // impugnante (abrev) / impugnantes
+  'RECONVINTES?',     // reconvenção / reconvintes
+  'RECONVTES?',       // reconvinte (abrev) / reconvintes
+  'EMBARGANTES?',     // embargos / embargantes
+  'EMBARGTES?',       // embargante (abrev) / embargantes
 ].join('|');
 
 const SIGLAS_REU = [
-  'REQD[OA]',            // requerido
-  'EXECTD[OA]',       // executado/executada (abrev)
-  'EXECUTAD[OA]',     // executado/executada (extenso)
-  'LIQUIDAD[OA]',     // liquidado/liquidada
-  'LIQD[OA]',         // liquidado/liquidada (abrev)
-  'INVENTARIAD[OA]',  // inventariado/inventariada
-  'INVTD[OA]',        // inventariado/inventariada (abrev)
-  'IMPUGNAD[OA]',     // impugnado/impugnada
-  'IMPUGD[OA]',       // impugnado/impugnada (abrev)
-  'RECONVIND[OA]',    // reconvindo/reconvinda
-  'RECONVD[OA]',      // reconvindo/reconvinda (abrev)
-  'EMBARGAD[OA]',     // embargado/embargada (extenso)
-  'EMBARGD[OA]',      // embargado/embargada (abrev)
+  'REQD[OA]S?',            // requerido(a) / requeridos(as)
+  'EXECTD[OA]S?',          // executado(a) (abrev) / executados(as)
+  'EXECUTAD[OA]S?',        // executado(a) (extenso) / executados(as)
+  'LIQUIDAD[OA]S?',        // liquidado(a) / liquidados(as)
+  'LIQD[OA]S?',            // liquidado(a) (abrev) / liquidados(as)
+  'INVENTARIAD[OA]S?',     // inventariado(a) / inventariados(as)
+  'INVTD[OA]S?',           // inventariado(a) (abrev) / inventariados(as)
+  'IMPUGNAD[OA]S?',        // impugnado(a) / impugnados(as)
+  'IMPUGD[OA]S?',          // impugnado(a) (abrev) / impugnados(as)
+  'RECONVIND[OA]S?',       // reconvindo(a) / reconvindos(as)
+  'RECONVD[OA]S?',         // reconvindo(a) (abrev) / reconvindos(as)
+  'EMBARGAD[OA]S?',        // embargado(a) (extenso) / embargados(as)
+  'EMBARGD[OA]S?',         // embargado(a) (abrev) / embargados(as)
 ].join('|');
 
 // reqdo é o último campo da ORDEM — sem campo seguinte que o feche via INICIO_CAMPO.
@@ -1197,7 +1197,7 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
   // conferirmos visualmente que o arquivo carrega corretamente no ESAJ.
   const faseELaudo = /LAUDO/i.test(fase);
   const TIMEOUT_IMPORT_PADRAO = 3000;
-  const TIMEOUT_IMPORT_LAUDO  = 10000;
+  const TIMEOUT_IMPORT_LAUDO  = 30000;
 
   console.log(`[peticionar] Fase: ${fase} | Subfase: ${subfase} | Código: ${codigo} | Total docs: ${docs.length}`);
 
