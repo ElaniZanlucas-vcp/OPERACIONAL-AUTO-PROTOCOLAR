@@ -34,7 +34,7 @@ Não há suite de testes nem linter configurados neste projeto.
 - Etapa 11: encaminha no SIGAD (Editar → Fases → Encaminhar → Salvar).
 - Modo `etapa11`: dois submodos pelos arquivos em `data/` — batch (`encaminhar.json`) ou retomada (`extracao-protocolo.json`).
 - `SERVICOS_EXCLUIDOS` (array no topo do arquivo, normalizado sem pontos) — serviços nunca incluídos em `pending.json`. Atualmente: `['26872']`.
-- Divergências nas Etapas 3, 5 e 7 **não pulam mais o serviço**: encaminham no SIGAD com subfase `PROTOCOLAR` (em vez de `AGUARDAR PROTOCOLO`) e seguem para o próximo serviço do loop.
+- Divergências nas Etapas 3, 5, 7 e 7.3 **não pulam mais o serviço**: encaminham no SIGAD com subfase `PROTOCOLAR` (em vez de `AGUARDAR PROTOCOLO`) e seguem para o próximo serviço do loop.
 
 ### Fluxo web (Playwright / PrimeFaces)
 
@@ -75,6 +75,8 @@ Os IDs mudam entre deploys (`j_idt474:j_idt545` → `j_idt436:j_idt507` → `j_i
 `normalizar()`: remove apóstrofo inicial (artefato do ESAJ), decodifica `&amp;`, remove acentos, maiúsculas, sufixo de estado (`/MS.`), `S/A`→`SA`, barras→espaço, `" - "`→espaço, remove pontuação, ordinais com zero (`02ª` → `2ª`), colapsa espaços, `"S A"`→`"SA"`. Leniência para `"E OUTROS"` nos nomes de partes (compara só o primeiro nome).
 
 **Etapa 7.1 — fallback "todas as partes":** se autor/réu divergem mas `extrairPartesDoESAJ` retornou `todasPartes` (de `#tableTodasPartes`), testa o nome do documento contra todos os candidatos daquele papel antes de declarar divergência — não só o nome principal exibido pelo ESAJ. Só se aplica a `autor`/`reu`; os demais campos exigem match exato. Sobrevivendo a 7.1, a divergência segue para a notificação por e-mail (pendente) e o serviço é encaminhado com subfase `PROTOCOLAR`.
+
+**Etapa 7.3 — Laudo acima do limite de import do ESAJ:** o ESAJ rejeita petições com arquivo acima de ~30 MB; na prática só o documento da aba Laudos (quando `buscarLaudo` é `true`) tende a estourar esse tamanho. Antes de peticionar, `processarServico` confere `fs.statSync` do PDF em `pastaRecente` contra `LIMITE_TAMANHO_LAUDO_BYTES` (`LIMITE_TAMANHO_LAUDO_MB = 29.99`, topo do arquivo). Se exceder, segue o mesmo padrão de divergência das Etapas 3/5/7: fecha a aba ESAJ, encaminha no SIGAD com subfase `PROTOCOLAR` e retorna `{ ok: false, motivo }` — que cai automaticamente em "Pontos de Atenção" no `execucao.md` (nenhuma mudança necessária em `gerarRelatorioExecucao`).
 
 **Documentos (Etapa 3):** o Alvará é identificado por `tipoDocumento.toUpperCase().includes('ALVARA')` — **sem acento**, pois o SIGAD retorna o campo sem acentuação (ver `[[project_sigad_alvara]]` em memória). Se vier em índice 0, a lista é invertida para o Alvará ficar sempre em índice 1 (doc2). `responsavel` só é preservado no documento principal.
 

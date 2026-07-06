@@ -2,7 +2,7 @@
 TODO: Automação Protocolar - Ordenar
 ==============================
 
-[ROTINA-EXECUÇÃO]: 9h30, 11h40, 15h40
+[ROTINA-EXECUÇÃO]: 9h30, 11h40, 15h
 
 
 [MARKDOWN-RETORNO] $\green ✔$

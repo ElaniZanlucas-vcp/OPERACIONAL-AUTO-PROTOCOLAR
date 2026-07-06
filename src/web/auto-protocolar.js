@@ -22,6 +22,11 @@ const TRABALHOS_FINAIS = process.env.TRABALHOS_FINAIS;
 const ENCAMINHAR_NOME     = 'Dayane Franco Alves';
 const SERVICOS_EXCLUIDOS  = ['26872']; // normalizado sem pontos
 
+// ESAJ rejeita import de petição acima de ~30 MB — na prática só o Laudo
+// (aba Laudos) costuma estourar esse tamanho.
+const LIMITE_TAMANHO_LAUDO_MB    = 29.99;
+const LIMITE_TAMANHO_LAUDO_BYTES = LIMITE_TAMANHO_LAUDO_MB * 1024 * 1024;
+
 // ── Seletores confirmados via recorder ───────────────────────────────────────
 
 const SEL = {
@@ -69,6 +74,19 @@ async function aguardarAjax(page) {
     () => typeof window.PrimeFaces === 'undefined' || window.PrimeFaces.ajax.Queue.isEmpty(),
     { timeout: 15000 }
   ).catch(() => {});
+}
+
+// aguardarAjax() só garante fila de AJAX vazia — não garante que o DOM já
+// terminou de renderizar. Usado para localizar elementos cujo aparecimento
+// depende de um re-render que pode ocorrer alguns instantes depois.
+async function aguardarElemento(tentarLocalizar, { timeout = 10000, intervalo = 500 } = {}) {
+  const inicio = Date.now();
+  while (Date.now() - inicio < timeout) {
+    const encontrado = await tentarLocalizar();
+    if (encontrado) return encontrado;
+    await new Promise(r => setTimeout(r, intervalo));
+  }
+  return null;
 }
 
 // ── Login ESAJ (certificado digital) ─────────────────────────────────────────
@@ -887,43 +905,48 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
   await page.locator(SEL.BTN_EDITAR).click();
   await aguardarAjax(page);
 
-  // Aba Fases — testa IDs conhecidos; fallback por .ui-tabview-nav
+  // Aba Fases — testa IDs conhecidos; fallback por .ui-tabview-nav.
+  // Poll com timeout: o AJAX do "Editar" pode levar mais que aguardarAjax()
+  // para terminar de renderizar formServico (aguardarAjax só garante fila vazia).
   console.log('[etapa-11] Clicando na aba Fases...');
-  let tabFases = null;
-  for (const id of TAB_FASES_CONTAINER_IDS) {
-    const loc = page.locator(`[id="formServico:${id}"] a:has-text("Fases")`);
-    if (await loc.isVisible().catch(() => false)) { tabFases = loc; break; }
-  }
-  if (!tabFases) {
+  const tabFases = await aguardarElemento(async () => {
+    for (const id of TAB_FASES_CONTAINER_IDS) {
+      const loc = page.locator(`[id="formServico:${id}"] a:has-text("Fases")`);
+      if (await loc.isVisible().catch(() => false)) return loc;
+    }
     const byNav = page.locator('[id="formServico"] .ui-tabview-nav a:has-text("Fases")');
     if ((await byNav.count().catch(() => 0)) > 0) {
-      tabFases = byNav.first();
-      const idContainer = await byNav.first()
+      const loc = byNav.first();
+      const idContainer = await loc
         .evaluate(el => el.closest('.ui-tabview')?.id ?? '?').catch(() => '?');
       console.warn(`[etapa-11] TAB_FASES_EDIT: IDs conhecidos não encontrados. Fallback container="${idContainer}". Adicione em TAB_FASES_CONTAINER_IDS.`);
+      return loc;
     }
-  }
+    return null;
+  });
   if (!tabFases) throw new Error('[etapa-11] Aba Fases não encontrada após Editar.');
   await tabFases.click();
   await aguardarAjax(page);
 
-  // Botão Encaminhar — testa IDs conhecidos; fallback por button no painel ativo
+  // Botão Encaminhar — testa IDs conhecidos; fallback por button no painel ativo.
+  // Mesmo motivo do poll acima: o painel pode ainda estar renderizando.
   console.log('[etapa-11] Clicando em Encaminhar...');
-  let btnEncaminhar = null;
-  for (const id of BTN_ENCAMINHAR_IDS) {
-    const loc = page.locator(`[id="${id}"]`);
-    if (await loc.isVisible().catch(() => false)) { btnEncaminhar = loc; break; }
-  }
-  if (!btnEncaminhar) {
+  const btnEncaminhar = await aguardarElemento(async () => {
+    for (const id of BTN_ENCAMINHAR_IDS) {
+      const loc = page.locator(`[id="${id}"]`);
+      if (await loc.isVisible().catch(() => false)) return loc;
+    }
     const byText = page
       .locator('[id="formServico"] .ui-tabview-panel:not(.ui-helper-hidden) button.ui-button:not(.ui-state-disabled)')
       .filter({ hasText: /encaminhar/i });
     if ((await byText.count().catch(() => 0)) > 0) {
-      btnEncaminhar = byText.first();
-      const idFallback = await btnEncaminhar.getAttribute('id').catch(() => '?');
+      const loc = byText.first();
+      const idFallback = await loc.getAttribute('id').catch(() => '?');
       console.warn(`[etapa-11] BTN_ENCAMINHAR: usando fallback id="${idFallback}". Adicione em BTN_ENCAMINHAR_IDS.`);
+      return loc;
     }
-  }
+    return null;
+  });
   if (!btnEncaminhar) throw new Error('[etapa-11] Botão Encaminhar não encontrado.');
   await btnEncaminhar.click();
   await aguardarAjax(page);
@@ -1388,6 +1411,25 @@ async function processarServico(page, context, servicoAlvo = null) {
   }
 
   console.log('[etapa-7] Dados conferem. Prosseguindo para Etapas 8-10 (peticionar)...');
+
+  // Etapa 7.3 — Laudo grande: ESAJ rejeita import de petição acima de ~30 MB.
+  // Só o documento vindo da aba Laudos (buscarLaudo) costuma estourar esse limite.
+  if (buscarLaudo) {
+    const caminhoLaudo = path.join(extracao.pasta.recente, fases.documentosEsperados[0] + '.pdf');
+    const tamanhoBytes = fs.statSync(caminhoLaudo).size;
+    if (tamanhoBytes > LIMITE_TAMANHO_LAUDO_BYTES) {
+      const tamanhoMB = (tamanhoBytes / (1024 * 1024)).toFixed(2);
+      console.warn(`[etapa-7.3] Laudo (${tamanhoMB} MB) excede o limite de import do ESAJ (${LIMITE_TAMANHO_LAUDO_MB} MB) — encaminhando com subfase PROTOCOLAR.`);
+      await esajAba.close();
+      await page.bringToFront();
+      await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
+      extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
+      salvarExtracao(extracao);
+      await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+      await aguardarAjax(page);
+      return { ok: false, motivo: `laudo excede limite de tamanho do ESAJ (${tamanhoMB} MB > ${LIMITE_TAMANHO_LAUDO_MB} MB)`, ...extracao };
+    }
+  }
 
   // Etapas 8-10 — protocolo no ESAJ; peticionarNoESAJ fecha cada aba ao fim
   await peticionarNoESAJ(esajAba, page, context, {
