@@ -2,34 +2,8 @@
 TODO: Automação Protocolar - Ordenar
 ==============================
 29.735 - Incidente, 28.796 - Marcos
-[TODO] 08/07
-Vamos fazer o seguinte ajuste:
-- Em alguns casos, na aba de documentos, os docs vinculados à fase correta podem não estar entre os mais recentes, ou seja, caso não acharmos entre o mais recente, precisamos iterar a aba de docs para verificarmos sua existência. Caso o doc extraído da Fase realmente não exista na aba de Documentos, nós pulamos para etapa 11 (como está implementado).
 
 [ROTINA-EXECUÇÃO]: 9h30, 11h40, 14h40
-
-Considere que o sufixo da linha 733. Precisamos fazer o seuginte ajuste:
-- Quando no esaj possui apenas mais de 1 mesma participação, o doc deve considerar a verificação de "E OUTRO". Caso tenha mais de 1, o doc veirifica por "E OUTROS"
-Caso 1:
-Autor: Fulano
-Réu: Cicrano
-Réu: Beltrano
-doc: ... E OUTRO
-
-Caso 2:
-Autor: Fulano
-Réu: Cicrano
-Réu: Beltrano
-Réu: Chiquinho
-doc: ... E OUTROS
-
-
-[Acentos e várias partes]
-- É necessário desconsiderar os acentos no esaj e no doc, pois os nomes podem gerar alguma diferença apenas por conta da acentuação.
-- Ademais, lembre-se do seguinte fluxo:
-
-
-Ele não está verificando o match para todas as partes
 
 
 [MARKDOWN-RETORNO] $\green ✔$
@@ -37,7 +11,7 @@ Vamos criar um markdown execucao.md ou qualquer outro nome com o seguinte format
 - Executados: lista de todos os Serviços em pending.json
 - Pontos de atenção: lista de todos os Serviços que geraram divergências com suas respectivas divergências. 
 
-[LIMITE-LAUDO]
+[LIMITE-LAUDO] $\orange {verificar se funciona}$
 O esaj possui um tamanho limite para o import no documento (29,99 MB), o que pode gerar problemas na hora de protocolar.
 Vamos considerar que este erro pode acontecer apenas com o documento de Laudo por ser um documento grande. Portanto, é preciso verificar o tamanho do documento que for extraído da aba de Laudos.
 Caso exceda o tamanho, faça o fluxo de Encaminhar -> Protocolar e adicione como divergência em execucao.md

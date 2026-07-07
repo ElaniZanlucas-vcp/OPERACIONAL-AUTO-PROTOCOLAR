@@ -209,14 +209,11 @@ async function extrairFases(page) {
 
 // ── Etapa 3: Acessar Documentos ──────────────────────────────────────────────
 
-async function extrairDocumentos(page, temAlvara) {
-  console.log('[etapa-3] Clicando na aba Documentos...');
-  await page.locator(SEL.TAB_DOCS).click();
-  await aguardarAjax(page);
-
-  const qtd = temAlvara ? 2 : 1;
-
-  const documentos = await page.evaluate(({ seletorLinhas, qtd }) => {
+// Lê TODAS as linhas atualmente renderizadas na aba Documentos (sem slice).
+// Assume que a aba já está ativa — usada tanto pelo topo (mais recentes)
+// quanto pelo fallback da Etapa 3.2 (varredura completa).
+async function extrairLinhasDocumentos(page) {
+  return page.evaluate(({ seletorLinhas }) => {
     function valorCelula(td) {
       if (!td) return '';
       const clone = td.cloneNode(true);
@@ -232,14 +229,21 @@ async function extrairDocumentos(page, temAlvara) {
       return null;
     }
 
-    return [...document.querySelectorAll(seletorLinhas)]
-      .slice(0, qtd)
-      .map(row => ({
-        documento:     valorCelula(celulaPorTitulo(row, 'Documento')),
-        tipoDocumento: valorCelula(celulaPorTitulo(row, 'Tipo Documento')),
-        responsavel:   valorCelula(celulaPorTitulo(row, 'Responsável')),
-      }));
-  }, { seletorLinhas: SEL.DOCS_LINHAS, qtd });
+    return [...document.querySelectorAll(seletorLinhas)].map(row => ({
+      documento:     valorCelula(celulaPorTitulo(row, 'Documento')),
+      tipoDocumento: valorCelula(celulaPorTitulo(row, 'Tipo Documento')),
+      responsavel:   valorCelula(celulaPorTitulo(row, 'Responsável')),
+    }));
+  }, { seletorLinhas: SEL.DOCS_LINHAS });
+}
+
+async function extrairDocumentos(page, temAlvara) {
+  console.log('[etapa-3] Clicando na aba Documentos...');
+  await page.locator(SEL.TAB_DOCS).click();
+  await aguardarAjax(page);
+
+  const qtd = temAlvara ? 2 : 1;
+  const documentos = (await extrairLinhasDocumentos(page)).slice(0, qtd);
 
   // Quando há Alvará, garante que ele fica sempre em índice 1 (doc2),
   // independente da ordem exibida pelo SIGAD.
@@ -254,6 +258,15 @@ async function extrairDocumentos(page, temAlvara) {
 
   console.log(`[etapa-3] Docs encontrados (${documentos.length}): ${JSON.stringify(documentos)}`);
   return documentos;
+}
+
+// Etapa 3.2 — fallback: o doc esperado pode não estar entre os "mais recentes"
+// (ex: um doc de outra fase mais novo o empurra para baixo na tabela). Varre
+// TODA a aba Documentos (já ativa) em busca do código exato antes de declarar
+// divergência real.
+async function buscarDocumentoNaAba(page, codigoEsperado) {
+  const todasLinhas = await extrairLinhasDocumentos(page);
+  return todasLinhas.find(d => d.documento.toLowerCase().includes(codigoEsperado.toLowerCase())) ?? null;
 }
 
 // ── Etapa 3.1: Acessar Laudos (quando a Fase é Laudo) ────────────────────────
@@ -1339,7 +1352,51 @@ async function processarServico(page, context, servicoAlvo = null) {
     documentosEncontrados = documentosBrutos;
   }
 
-  const confere = conferirDocumentos(fases.documentosEsperados, documentosEncontrados);
+  let confere = conferirDocumentos(fases.documentosEsperados, documentosEncontrados);
+
+  if (!confere) {
+    // Etapa 3.2 — o(s) doc(s) esperado(s) pode(m) não estar entre os "mais recentes"
+    // (ex: um doc de outra fase mais novo o empurra pra baixo na tabela). Antes de
+    // declarar divergência real, varre a aba Documentos por completo procurando cada
+    // código esperado. No fluxo de Laudo, o doc principal (índice 0) vem da aba
+    // Laudos — não existe em Documentos, então não é buscado aqui.
+    console.log('[etapa-3.2] Documentos não batem entre os mais recentes — varrendo a aba Documentos por completo...');
+    const tentativas = [];
+    const candidatos = fases.documentosEsperados.map((codigo, i) => {
+      const atual = documentosEncontrados[i];
+      return atual?.documento?.toLowerCase().includes(codigo.toLowerCase()) ? atual : null;
+    });
+
+    let todosAchados = true;
+    for (let i = 0; i < candidatos.length; i++) {
+      if (candidatos[i]) continue;
+      const codigo = fases.documentosEsperados[i];
+      if (buscarLaudo && i === 0) {
+        console.log(`  [etapa-3.2] "${codigo}" é o Laudo principal (aba Laudos) — não buscado em Documentos.`);
+        tentativas.push({ codigo, achado: null, motivo: 'doc principal do Laudo não vem de Documentos' });
+        todosAchados = false;
+        break;
+      }
+      const achado = await buscarDocumentoNaAba(page, codigo);
+      console.log(`  [etapa-3.2] "${codigo}" → ${achado ? `encontrado ("${achado.documento}")` : 'não encontrado'}`);
+      tentativas.push({ codigo, achado });
+      if (!achado) { todosAchados = false; break; }
+      candidatos[i] = achado;
+    }
+
+    extracao.fallbackDocumentos = { tentativas, resultado: todosAchados };
+    salvarExtracao(extracao);
+
+    if (todosAchados) {
+      candidatos.slice(1).forEach(d => { if (d) d.responsavel = null; });
+      documentosEncontrados = candidatos;
+      confere = true;
+      console.log('[etapa-3.2] Todos os docs esperados foram localizados na aba Documentos — prosseguindo.');
+    } else {
+      console.warn('[etapa-3.2] Ao menos um doc esperado realmente não existe na aba Documentos.');
+    }
+  }
+
   extracao.documentos = { encontrados: documentosEncontrados, confere };
   salvarExtracao(extracao);
 
