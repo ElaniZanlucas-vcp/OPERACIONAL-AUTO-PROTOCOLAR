@@ -2,8 +2,9 @@
 TODO: Automação Protocolar - Ordenar
 ==============================
 29.735 - Incidente, 28.796 - Marcos
-Encontramos uma exceção a ser considerada na execução:
-Alguns processos no esaj podem não mostrar Classe, por estar como Incidente
+[TODO] 08/07
+Vamos fazer o seguinte ajuste:
+- Em alguns casos, na aba de documentos, os docs vinculados à fase correta podem não estar entre os mais recentes, ou seja, caso não acharmos entre o mais recente, precisamos iterar a aba de docs para verificarmos sua existência. Caso o doc extraído da Fase realmente não exista na aba de Documentos, nós pulamos para etapa 11 (como está implementado).
 
 [ROTINA-EXECUÇÃO]: 9h30, 11h40, 14h40
 

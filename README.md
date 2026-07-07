@@ -46,7 +46,7 @@ node src/web/auto-protocolar.js
 │ ║        encaminha c/ subfase PROTOCOLAR                           ║
 │ ║                                                                  ║
 │ ║  [Etapa 6]  Extrair partes + cabeçalho do ESAJ ────────── ✔     ║
-│ ║      (paralelo) Autor + Réu; "E OUTROS" se tableTodasPartes      ║
+│ ║      (paralelo) Autor + Réu; "E OUTRO"/"E OUTROS" p/ contagem     ║
 │ ║      Também retorna todasPartes (candidatos p/ fallback 7.1)     ║
 │ ║      Cabeçalho: classe, foro, vara, n° processo — tudo maiúsculo ║
 │ ║                                                                  ║
@@ -194,18 +194,18 @@ Os campos (`AO JUÍZO`, `AUTOS`, `AÇÃO`, autor, réu) só são procurados **na
 
 ### 3.6 Etapa 6 — Partes + Cabeçalho do ESAJ (paralelo)
 
-- **`extrairPartesDoESAJ`**: lê `#tablePartesPrincipais` (nomes) e `#tableTodasPartes` (contagem/candidatos por papel, quando existe). Classifica cada label → `AUTOR`/`RÉU` via `classificarRoleESAJ()` — lista de regexes por rótulo abreviado/extenso (ex: `^EXEQ`, `^REQ(T|NT|UER)`, `^RECLAM(T|ANT)`, `^EMBARG(T|ANT|ANTE|UE)`, `^IMPET(T|RANT)`, `^LIQ(T|ANT|UIDAN)`, `^INV(ANT|ARIAN)`, `^IMPUGN(T|ANT|ANTE)`, `^RECONVINT` para autor; análogos com sufixo `D`/`AD`/`UT`/`UID` para réu), ignorando linhas de Advogado(a) e valores `SEM ...`. Adiciona ` E OUTROS` ao nome quando `tableTodasPartes` tem mais de uma ocorrência do papel.
+- **`extrairPartesDoESAJ`**: lê `#tablePartesPrincipais` (nomes) e `#tableTodasPartes` (contagem/candidatos por papel, quando existe). Classifica cada label → `AUTOR`/`RÉU` via `classificarRoleESAJ()` — lista de regexes por rótulo abreviado/extenso (ex: `^EXEQ`, `^REQ(T|NT|UER)`, `^RECLAM(T|ANT)`, `^EMBARG(T|ANT|ANTE|UE)`, `^IMPET(T|RANT)`, `^LIQ(T|ANT|UIDAN)`, `^INV(ANT|ARIAN)`, `^IMPUGN(T|ANT|ANTE)`, `^RECONVINT` para autor; análogos com sufixo `D`/`AD`/`UT`/`UID` para réu), ignorando linhas de Advogado(a) e valores `SEM ...`. Sufixo de acordo com a contagem em `tableTodasPartes`: exatamente 2 ocorrências do papel → ` E OUTRO` (singular); mais de 2 → ` E OUTROS` (plural); 1 ou nenhuma → sem sufixo.
 - Retorna `{ partes, todasPartes }` — `todasPartes` é `{ AUTOR: [...], 'RÉU': [...] }` com **todos** os nomes classificados em `tableTodasPartes` (não só o primeiro de cada papel); usado como pool de candidatos pelo fallback da Etapa 7.1.
-- **`extrairCabecalhoDoESAJ`**: lê `#classeProcesso`, `#foroProcesso`, `#varaProcesso` (fallback via `th` label). Tudo em maiúsculo.
+- **`extrairCabecalhoDoESAJ`**: lê `#classeProcesso`, `#foroProcesso`, `#varaProcesso` (fallback via `th` label). Tudo em maiúsculo. **Exceção "Incidente":** processos incidentais (ex.: Incidente de Desconsideração de Personalidade Jurídica) não renderizam `#classeProcesso`. Fallback estrutural (sem id, mapeado via DevTools Recorder): `#containerDadosPrincipaisProcesso > div:first-of-type > div > div > span.unj-larger` (ou, se a estrutura variar, o primeiro `span.unj-larger` dentro do mesmo bloco). O span traz o nº do processo entre parênteses junto do texto (ex.: `"... (0008573-14.2023.8.12.0001)"`) — removido antes de retornar. `console.warn` sinaliza quando esse fallback é usado.
 - A mesma lógica de extração de partes existe duplicada em `src/web/teste-partes.js`, usada para testar contra uma lista fixa de processos sem rodar o fluxo completo (ver 3.12).
 
 ---
 
 ### 3.7 Etapa 7 — Conferência doc × ESAJ
 
-`normalizar()` aplica, em ordem: remove apóstrofo inicial (artefato do ESAJ), decodifica `&amp;` → `&`, remove acentos, maiúsculas, remove sufixo de estado no foro (`/MS.`, `/MT.` etc.), `S/A` → `SA` (antes de tratar barras), barras restantes → espaço, `" - "` → espaço (ex: `"Comaves - Industria"` → `"Comaves Industria"`), remove pontuação, ordinais com zero (`02ª` → `2ª`), colapsa espaços e por fim `"S A"` → `"SA"` (caso a remoção de pontos tenha deixado `S. A.` como `"S A"`). Compara campo a campo: vara, foro, processo, classe, autor, réu. Leniência para `"E OUTROS"` nos nomes (compara só o primeiro nome).
+`normalizar()` aplica, em ordem: remove apóstrofo inicial (artefato do ESAJ), decodifica `&amp;` → `&`, remove acentos, maiúsculas, "Imissão de/na Posse" → "Imissão Posse" (classe), "Espólio de X" → "Espólio X" (nomes — ex: `"ESPÓLIO RUY BARBOSA DE MEDEIROS"` == `"ESPÓLIO DE RUY BARBOSA DE MEDEIROS"`), remove sufixo de estado no foro (`/MS.`, `/MT.` etc.), `S/A` → `SA` (antes de tratar barras), barras restantes → espaço, `" - "` → espaço (ex: `"Comaves - Industria"` → `"Comaves Industria"`), remove pontuação, ordinais com zero (`02ª` → `2ª`), colapsa espaços e por fim `"S A"` → `"SA"` (caso a remoção de pontos tenha deixado `S. A.` como `"S A"`). Compara campo a campo: vara, foro, processo, classe, autor, réu. Leniência para `"E OUTRO"`/`"E OUTROS"` nos nomes (compara só o nome-base, sem o sufixo de quantidade).
 
-**Etapa 7.1 — Fallback "verificar todas as partes":** quando autor e/ou réu divergem mas `todasPartes` (Etapa 6) está disponível, testa o nome do documento contra **todos** os candidatos daquele papel em `tableTodasPartes` (não só o nome principal do ESAJ) antes de declarar divergência. Loga cada tentativa (`doc="..." candidatos=[...] → [OK]/[XX]`). Só campos `autor`/`reu` usam este fallback — vara/foro/processo/classe continuam exigindo match exato.
+**Etapa 7.1 — Fallback "verificar todas as partes":** quando autor e/ou réu divergem mas `todasPartes` (Etapa 6) está disponível, testa o nome do documento contra **todos** os candidatos daquele papel em `tableTodasPartes` (não só o nome principal do ESAJ) antes de declarar divergência. Loga cada tentativa (`doc="..." candidatos=[...] → [OK]/[XX]`). Só campos `autor`/`reu` usam este fallback — vara/foro/processo/classe continuam exigindo match exato. Percorre **todos** os campos divergentes (`.map()`, sem short-circuit) — um campo sem match não impede que os campos seguintes sejam testados e registrados em `tentativas`; o resultado final ainda exige que todos os campos divergentes resolvam.
 
 Divergência que sobrevive ao fallback 7.1 → notificação por e-mail pendente (`GMAIL_USUARIO`/`GMAIL_APP_PASSWORD`, ver 4) → **não pula mais o serviço**: encaminha no SIGAD com subfase `PROTOCOLAR` e segue para o próximo.
 

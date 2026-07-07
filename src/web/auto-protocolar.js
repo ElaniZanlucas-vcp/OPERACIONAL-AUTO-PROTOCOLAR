@@ -750,16 +750,39 @@ async function extrairCabecalhoDoESAJ(esajPage, numeroProcesso) {
       return '';
     }
 
+    // Processos "Incidente" (ex.: Incidente de Cumprimento de Sentença) não renderizam
+    // #classeProcesso. O texto aparece como span.unj-larger dentro do 1º bloco de
+    // #containerDadosPrincipaisProcesso, sem id fixo — mapeado via DevTools Recorder.
+    function classeIncidente() {
+      const container = document.getElementById('containerDadosPrincipaisProcesso');
+      if (!container) return '';
+      const bloco = container.querySelector(':scope > div:first-of-type');
+      const el = bloco?.querySelector(':scope > div > div > span.unj-larger')
+              ?? bloco?.querySelector('span.unj-larger');
+      if (!el) return '';
+      // O span traz o nº do processo entre parênteses junto da classe (ex.: "... (0008573-14.2023.8.12.0001)")
+      return el.textContent.trim().replace(/\s*\([^)]*\)\s*$/, '').trim();
+    }
+
     const classeEl = document.getElementById('classeProcesso');
     const foroEl   = document.getElementById('foroProcesso');
     const varaEl   = document.getElementById('varaProcesso');
 
+    let classe = classeEl?.textContent.trim() || porLabel('Classe');
+    const viaIncidente = !classe;
+    if (viaIncidente) classe = classeIncidente();
+
     return {
-      classe: (classeEl?.textContent.trim() || porLabel('Classe')).replace(/\s+/g, ' '),
+      classe: classe.replace(/\s+/g, ' '),
       foro:   (foroEl?.textContent.trim()   || porLabel('Foro')).replace(/\s+/g, ' '),
       vara:   (varaEl?.textContent.trim()   || porLabel('Vara')).replace(/\s+/g, ' '),
+      viaIncidente,
     };
   });
+
+  if (dados.viaIncidente) {
+    console.warn(`[etapa-6] Classe não encontrada em #classeProcesso — usado fallback "Incidente": "${dados.classe}"`);
+  }
 
   return {
     numeroProcesso: numeroProcesso.toUpperCase(),
@@ -779,6 +802,7 @@ function normalizar(str) {
     .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove acentos
     .toUpperCase()
     .replace(/\bIMISSAO (DE|NA) POSSE\b/g, 'IMISSAO POSSE') // "Imissão de Posse" == "Imissão na Posse" (classe)
+    .replace(/\bESPOLIO DE\b/g, 'ESPOLIO')                // "Espólio de Fulano" == "Espólio Fulano" (nomes)
     .replace(/\/[A-Z]{2,3}\.?\s*$/, '')  // remove /MS. /MT. /SP. no final (foro)
     .replace(/\bS\/A\b/g, 'SA')          // S/A → SA antes de converter barras
     .replace(/\//g, ' ')                  // barras restantes → espaço
