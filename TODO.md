@@ -1,8 +1,34 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
+29.735 - Incidente, 28.796 - Marcos
+Encontramos uma exceção a ser considerada na execução:
+Alguns processos no esaj podem não mostrar Classe, por estar como Incidente
 
-[ROTINA-EXECUÇÃO]: 9h30, 11h40, 15h
+[ROTINA-EXECUÇÃO]: 9h30, 11h40, 14h40
+
+Considere que o sufixo da linha 733. Precisamos fazer o seuginte ajuste:
+- Quando no esaj possui apenas mais de 1 mesma participação, o doc deve considerar a verificação de "E OUTRO". Caso tenha mais de 1, o doc veirifica por "E OUTROS"
+Caso 1:
+Autor: Fulano
+Réu: Cicrano
+Réu: Beltrano
+doc: ... E OUTRO
+
+Caso 2:
+Autor: Fulano
+Réu: Cicrano
+Réu: Beltrano
+Réu: Chiquinho
+doc: ... E OUTROS
+
+
+[Acentos e várias partes]
+- É necessário desconsiderar os acentos no esaj e no doc, pois os nomes podem gerar alguma diferença apenas por conta da acentuação.
+- Ademais, lembre-se do seguinte fluxo:
+
+
+Ele não está verificando o match para todas as partes
 
 
 [MARKDOWN-RETORNO] $\green ✔$

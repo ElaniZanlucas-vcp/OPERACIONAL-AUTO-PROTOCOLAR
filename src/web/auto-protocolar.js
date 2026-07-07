@@ -730,7 +730,7 @@ async function extrairPartesDoESAJ(esajPage) {
   const partes = [];
   for (const [participacao, nome] of porRole) {
     const total = todasPartes ? todasPartes[participacao].length : 0;
-    const sufixo = total > 1 ? ' E OUTROS' : '';
+    const sufixo = total > 2 ? ' E OUTROS' : total === 2 ? ' E OUTRO' : '';
     partes.push({ participacao, nome: nome + sufixo });
   }
 
@@ -802,9 +802,9 @@ function nomesBatem(docVal, esajVal) {
   const e = normalizar(esajVal);
   if (!d && !e) return true;
   if (d === e) return true;
-  // Leniência para "E OUTROS": compara apenas o primeiro nome
-  const baseD = d.replace(/\s+E OUTROS$/, '').trim();
-  const baseE = e.replace(/\s+E OUTROS$/, '').trim();
+  // Leniência para "E OUTRO"/"E OUTROS": compara apenas o primeiro nome
+  const baseD = d.replace(/\s+E OUTROS?$/, '').trim();
+  const baseE = e.replace(/\s+E OUTROS?$/, '').trim();
   return baseD === baseE;
 }
 
@@ -1382,16 +1382,30 @@ async function processarServico(page, context, servicoAlvo = null) {
     const todasPartes = extracao.esaj.todasPartes;
     if (todasPartes) {
       console.log('[etapa-7.1] tableTodasPartes disponível — tentando fallback de partes...');
-      divergenciaSuperada = conferencia.campos.every(r => {
+      const tentativas = [];
+      // Percorre TODOS os campos divergentes (sem short-circuit): usar .every() aqui pararia
+      // no primeiro campo sem match e nunca testaria os seguintes (ex: "reu" batendo via
+      // fallback ficava sem registro se "autor" já tivesse falhado antes na lista de campos).
+      const resultados = conferencia.campos.map(r => {
         if (r.bate) return true;
         if (r.campo !== 'autor' && r.campo !== 'reu') return false;
         const role = r.campo === 'autor' ? 'AUTOR' : 'RÉU';
         const candidatos = todasPartes[role] ?? [];
         const bateu = candidatos.some(cand => nomesBatem(r.doc, cand));
         console.log(`  [etapa-7.1] ${r.campo}: doc="${r.doc}" candidatos=[${candidatos.join(' | ')}] → ${bateu ? '[OK]' : '[XX]'}`);
+        tentativas.push({ campo: r.campo, doc: r.doc, candidatos, bateu });
         return bateu;
       });
+      divergenciaSuperada = resultados.every(Boolean);
+      // Registro persistente do fallback — o console some entre execuções, mas isto
+      // sobrevive em extracao-protocolo.json (até o próximo serviço) e no execucao.md
+      // (para a duração de todo o lote), permitindo diagnosticar um "sem match" depois.
+      extracao.fallbackPartes = { tentativas, resultado: divergenciaSuperada };
+      salvarExtracao(extracao);
       console.log(`[etapa-7.1] Fallback: ${divergenciaSuperada ? 'match encontrado — prosseguindo' : 'sem match'}.`);
+    } else {
+      extracao.fallbackPartes = { tentativas: [], resultado: false, motivo: 'tableTodasPartes ausente' };
+      salvarExtracao(extracao);
     }
 
     if (!divergenciaSuperada) {
@@ -1550,8 +1564,11 @@ async function mainEtapa11() {
 
 // "Ponto de atenção" = qualquer serviço que não terminou ok (resultado.ok === false),
 // cobrindo todas as etapas que caem para subfase PROTOCOLAR: Etapa 3 (documentos não
-// conferem), Etapa 5 (PDF não encontrado/pasta ausente) e Etapa 7 (dados divergem do
-// ESAJ). Quando a Etapa 7 rodou, detalha os campos que não bateram (conferencia.campos).
+// conferem), Etapa 5 (PDF não encontrado/pasta ausente), Etapa 7 (dados divergem do
+// ESAJ) e Etapa 7.3 (Laudo excede limite de tamanho). Quando a Etapa 7 rodou, detalha
+// os campos que não bateram (conferencia.campos) e, se o fallback de tableTodasPartes
+// (Etapa 7.1) foi tentado, os candidatos testados (fallbackPartes) — preservado aqui
+// porque extracao-protocolo.json é sobrescrito a cada serviço do lote.
 function gerarRelatorioExecucao(servicosDoLote, relatorioExecucao) {
   if (servicosDoLote.length === 0) return;
 
@@ -1580,6 +1597,17 @@ function gerarRelatorioExecucao(servicosDoLote, relatorioExecucao) {
         linhas.push('- **Campos divergentes:**');
         for (const d of divergencias) {
           linhas.push(`  - \`${d.campo}\`: doc="${d.doc}" | esaj="${d.esaj}"`);
+        }
+      }
+      const tentativas = resultado.fallbackPartes?.tentativas ?? [];
+      if (resultado.fallbackPartes && !resultado.fallbackPartes.resultado) {
+        linhas.push('- **Fallback tableTodasPartes (Etapa 7.1):**');
+        if (resultado.fallbackPartes.motivo) {
+          linhas.push(`  - ${resultado.fallbackPartes.motivo}`);
+        }
+        for (const t of tentativas) {
+          if (t.bateu) continue;
+          linhas.push(`  - \`${t.campo}\`: doc="${t.doc}" | candidatos=[${t.candidatos.join(' | ')}]`);
         }
       }
       linhas.push('');
