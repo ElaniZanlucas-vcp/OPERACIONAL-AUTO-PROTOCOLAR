@@ -17,6 +17,7 @@ const EXTRACAO_FILE    = path.resolve(__dirname, '../../data/extracao-protocolo.
 const PENDING_FILE     = path.resolve(__dirname, '../../data/pending.json');
 const ENCAMINHAR_FILE  = path.resolve(__dirname, '../../data/encaminhar.json');
 const EXECUCAO_FILE    = path.resolve(__dirname, '../../execucao.md');
+const DIAGNOSTICO_DIR  = path.resolve(__dirname, '../../data/diagnostico');
 const TRABALHOS_FINAIS = process.env.TRABALHOS_FINAIS;
 
 const ENCAMINHAR_NOME     = 'Dayane Franco Alves';
@@ -87,6 +88,24 @@ async function aguardarElemento(tentarLocalizar, { timeout = 10000, intervalo = 
     await new Promise(r => setTimeout(r, intervalo));
   }
   return null;
+}
+
+// Diagnóstico best-effort para falhas de fallback em cascata (ex: encaminharServico).
+// Salva screenshot + HTML da página em data/diagnostico/ com timestamp, para
+// inspeção posterior sem depender de reproduzir o erro ao vivo. Nunca lança —
+// se a captura falhar (ex: página já fechada), apenas registra um aviso.
+async function capturarDiagnostico(page, rotulo) {
+  try {
+    fs.mkdirSync(DIAGNOSTICO_DIR, { recursive: true });
+    const timestamp  = new Date().toISOString().replace(/[:.]/g, '-');
+    const base        = path.join(DIAGNOSTICO_DIR, `${rotulo}_${timestamp}`);
+    await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => {});
+    const html = await page.content().catch(() => null);
+    if (html) fs.writeFileSync(`${base}.html`, html, 'utf-8');
+    console.warn(`[diagnostico] Capturado em ${base}.{png,html}`);
+  } catch (err) {
+    console.warn(`[diagnostico] Falha ao capturar diagnóstico ("${rotulo}"): ${err.message}`);
+  }
 }
 
 // ── Login ESAJ (certificado digital) ─────────────────────────────────────────
@@ -932,9 +951,9 @@ function conferirEtapa7(cabecalhoDoc, esaj) {
 // ── Etapa 11: Encaminhar ──────────────────────────────────────────────────────
 
 // IDs conhecidos por deploy — quando o fallback for usado, o console.warn mostra o ID real para atualizar aqui
-const TAB_FASES_CONTAINER_IDS  = ['j_idt474', 'j_idt436', 'j_idt438'];
-const BTN_ENCAMINHAR_IDS       = ['formServico:j_idt474:j_idt545', 'formServico:j_idt436:j_idt507', 'formServico:j_idt438:j_idt509'];
-const BTN_SALVAR_FASE_IDS      = ['formDlgEnviarServico:j_idt714', 'formDlgEnviarServico:j_idt750', 'formDlgEnviarServico:j_idt712'];
+const TAB_FASES_CONTAINER_IDS  = ['j_idt474', 'j_idt436', 'j_idt438', 'j_idt445'];
+const BTN_ENCAMINHAR_IDS       = ['formServico:j_idt474:j_idt545', 'formServico:j_idt436:j_idt507', 'formServico:j_idt438:j_idt509', 'formServico:j_idt445:j_idt516'];
+const BTN_SALVAR_FASE_IDS      = ['formDlgEnviarServico:j_idt714', 'formDlgEnviarServico:j_idt750', 'formDlgEnviarServico:j_idt712', 'formDlgEnviarServico:j_idt721'];
 const BTN_SALVAR_DETALHES_IDS  = ['formServico:j_idt471', 'formServico:j_idt433'];
 
 async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR PROTOCOLO' }) {
@@ -951,17 +970,21 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
       const loc = page.locator(`[id="formServico:${id}"] a:has-text("Fases")`);
       if (await loc.isVisible().catch(() => false)) return loc;
     }
-    const byNav = page.locator('[id="formServico"] .ui-tabview-nav a:has-text("Fases")');
+    // .ui-tabview-nav (PrimeFaces TabView clássico) / .ui-tabs-nav (widget renomeado no deploy 2026.07.04) — cobre os dois.
+    const byNav = page.locator('[id="formServico"] .ui-tabview-nav a:has-text("Fases"), [id="formServico"] .ui-tabs-nav a:has-text("Fases")');
     if ((await byNav.count().catch(() => 0)) > 0) {
       const loc = byNav.first();
       const idContainer = await loc
-        .evaluate(el => el.closest('.ui-tabview')?.id ?? '?').catch(() => '?');
+        .evaluate(el => el.closest('.ui-tabview, .ui-tabs')?.id ?? '?').catch(() => '?');
       console.warn(`[etapa-11] TAB_FASES_EDIT: IDs conhecidos não encontrados. Fallback container="${idContainer}". Adicione em TAB_FASES_CONTAINER_IDS.`);
       return loc;
     }
     return null;
   });
-  if (!tabFases) throw new Error('[etapa-11] Aba Fases não encontrada após Editar.');
+  if (!tabFases) {
+    await capturarDiagnostico(page, 'etapa11_aba-fases-nao-encontrada');
+    throw new Error('[etapa-11] Aba Fases não encontrada após Editar.');
+  }
   await tabFases.click();
   await aguardarAjax(page);
 
@@ -970,11 +993,13 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
   console.log('[etapa-11] Clicando em Encaminhar...');
   const btnEncaminhar = await aguardarElemento(async () => {
     for (const id of BTN_ENCAMINHAR_IDS) {
-      const loc = page.locator(`[id="${id}"]`);
+      // Exige tag <button> — IDs j_idt* são reaproveitados entre deploys e podem
+      // recair sobre um elemento não-botão (ex: label), que "visível" mas não submete nada.
+      const loc = page.locator(`button[id="${id}"]`);
       if (await loc.isVisible().catch(() => false)) return loc;
     }
     const byText = page
-      .locator('[id="formServico"] .ui-tabview-panel:not(.ui-helper-hidden) button.ui-button:not(.ui-state-disabled)')
+      .locator('[id="formServico"] .ui-tabview-panel:not(.ui-helper-hidden) button.ui-button:not(.ui-state-disabled), [id="formServico"] .ui-tabs-panel:not(.ui-helper-hidden) button.ui-button:not(.ui-state-disabled)')
       .filter({ hasText: /encaminhar/i });
     if ((await byText.count().catch(() => 0)) > 0) {
       const loc = byText.first();
@@ -984,7 +1009,10 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
     }
     return null;
   });
-  if (!btnEncaminhar) throw new Error('[etapa-11] Botão Encaminhar não encontrado.');
+  if (!btnEncaminhar) {
+    await capturarDiagnostico(page, 'etapa11_btn-encaminhar-nao-encontrado');
+    throw new Error('[etapa-11] Botão Encaminhar não encontrado.');
+  }
   await btnEncaminhar.click();
   await aguardarAjax(page);
   await page.locator(SEL.DLG_ENCAMINHAR).waitFor({ state: 'visible', timeout: 10000 });
@@ -1029,7 +1057,9 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
 
   let btnSalvarFase = null;
   for (const id of BTN_SALVAR_FASE_IDS) {
-    const loc = page.locator(`[id="${id}"]`);
+    // Exige tag <button> — IDs j_idt* são reaproveitados entre deploys e podem
+    // recair sobre um elemento não-botão (ex: label), que é "visível" mas não submete nada.
+    const loc = page.locator(`button[id="${id}"]`);
     if (await loc.isVisible().catch(() => false)) { btnSalvarFase = loc; break; }
   }
   if (!btnSalvarFase) {
@@ -1056,16 +1086,37 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
       console.warn(`[etapa-11] BTN_SALVAR_FASE fallback-2 (last sem Cancelar): id="${idFallback}". Adicione em BTN_SALVAR_FASE_IDS.`);
     }
   }
-  if (!btnSalvarFase) throw new Error('[etapa-11] Botão Salvar Fase não encontrado no dialog Encaminhar.');
+  if (!btnSalvarFase) {
+    await capturarDiagnostico(page, 'etapa11_btn-salvar-fase-nao-encontrado');
+    throw new Error('[etapa-11] Botão Salvar Fase não encontrado no dialog Encaminhar.');
+  }
+  {
+    const idResolvido = await btnSalvarFase.getAttribute('id').catch(() => '?');
+    console.log(`[etapa-11] Clicando em Salvar Fase (id="${idResolvido}")...`);
+  }
   await btnSalvarFase.click();
   await aguardarAjax(page);
+  // Confirma que o dialog realmente fechou — se ficou aberto (ex: erro de validação
+  // do SIGAD não reportado por aguardarAjax), seguir para Salvar Detalhes corromperia o fluxo.
+  const dlgAindaAberto = await page.locator(SEL.DLG_ENCAMINHAR).isVisible().catch(() => false);
+  if (dlgAindaAberto) {
+    const growlTexto = await page.locator('.ui-growl-item-container, .ui-messages-error, .ui-message-error')
+      .allTextContents().catch(() => []);
+    await capturarDiagnostico(page, 'etapa11_dialog-encaminhar-nao-fechou');
+    throw new Error(
+      `[etapa-11] Dialog Encaminhar não fechou após clicar em Salvar Fase — Fase não foi salva.` +
+      (growlTexto.length ? ` Mensagem do SIGAD: ${growlTexto.join(' | ')}` : '')
+    );
+  }
   console.log('[etapa-11] Fase salva.');
 
   // Salvar Detalhes do Serviço — testa IDs conhecidos; fallback por button "Salvar" no formServico
   console.log('[etapa-11] Salvando Detalhes do Serviço...');
   let btnSalvarDetalhes = null;
   for (const id of BTN_SALVAR_DETALHES_IDS) {
-    const loc = page.locator(`[id="${id}"]`);
+    // Exige tag <button> — IDs j_idt* são reaproveitados entre deploys e podem
+    // recair sobre um elemento não-botão (ex: label), que é "visível" mas não submete nada.
+    const loc = page.locator(`button[id="${id}"]`);
     if (await loc.isVisible().catch(() => false)) { btnSalvarDetalhes = loc; break; }
   }
   if (!btnSalvarDetalhes) {
@@ -1078,7 +1129,10 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
       console.warn(`[etapa-11] BTN_SALVAR_DETALHES: usando fallback id="${idFallback}". Adicione em BTN_SALVAR_DETALHES_IDS.`);
     }
   }
-  if (!btnSalvarDetalhes) throw new Error('[etapa-11] Botão Salvar Detalhes não encontrado.');
+  if (!btnSalvarDetalhes) {
+    await capturarDiagnostico(page, 'etapa11_btn-salvar-detalhes-nao-encontrado');
+    throw new Error('[etapa-11] Botão Salvar Detalhes não encontrado.');
+  }
   await btnSalvarDetalhes.click();
   await aguardarAjax(page);
   console.log('[etapa-11] Detalhes do Serviço salvos.');

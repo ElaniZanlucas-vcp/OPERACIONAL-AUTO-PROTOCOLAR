@@ -1,9 +1,11 @@
 ==============================
 TODO: Automação Protocolar - Ordenar
 ==============================
-29.735 - Incidente, 28.796 - Marcos
-
 [ROTINA-EXECUÇÃO]: 9h30, 11h40, 14h40
+
+[MELHORIA-GMAIL]
+- Criar conectores p/ enviar um gmail sobre inconsistências para os Responsáveis.
+
 
 
 [MARKDOWN-RETORNO] $\green ✔$
@@ -15,9 +17,6 @@ Vamos criar um markdown execucao.md ou qualquer outro nome com o seguinte format
 O esaj possui um tamanho limite para o import no documento (29,99 MB), o que pode gerar problemas na hora de protocolar.
 Vamos considerar que este erro pode acontecer apenas com o documento de Laudo por ser um documento grande. Portanto, é preciso verificar o tamanho do documento que for extraído da aba de Laudos.
 Caso exceda o tamanho, faça o fluxo de Encaminhar -> Protocolar e adicione como divergência em execucao.md
-
-
-
 
 
 [CORREÇÃO-LAUDO] $\green ✔$
