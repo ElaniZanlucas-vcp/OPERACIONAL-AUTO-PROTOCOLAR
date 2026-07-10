@@ -6,7 +6,9 @@ TODO: Automação Protocolar - Ordenar
 [MELHORIA-GMAIL]
 - Criar conectores p/ enviar um gmail sobre inconsistências para os Responsáveis.
 
-
+Faça o seguinte ajuste: 
+Quando houver mais de um autor ou réu, verifique as variações de "E OUTROS", "E OUTRO", "E OUTRA", "E OUTRAS" para não cairmos em um fallback desnecessário.
+Analise a execucao.md e observe que 29.788, 29.763, 29.197 são divergências desencessárias de fallback por conta desta possível variação. 
 
 [MARKDOWN-RETORNO] $\green ✔$
 Vamos criar um markdown execucao.md ou qualquer outro nome com o seguinte formato:

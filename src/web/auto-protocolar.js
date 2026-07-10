@@ -606,17 +606,25 @@ function corrigirMojibakeMacRoman(texto) {
   return corrigido;
 }
 
-async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
+// Busca fuzzy (nome do arquivo contém o código do documento) — o nome real em disco pode
+// trazer sufixos/prefixos extras além do código puro (ex: "VCP25412_68263 (2).pdf").
+// Usado tanto para ler o cabeçalho (Etapa 5) quanto para resolver o caminho no import do
+// ESAJ (Etapa 8) — mesma resolução nos dois pontos evita ENOENT por concatenação exata do nome.
+function localizarArquivoDocumento(pastaRecente, nomeDocumento) {
   const nomeLower = nomeDocumento.toLowerCase();
   const arquivo = fs.readdirSync(pastaRecente).find(f =>
     f.toLowerCase().endsWith('.pdf') && f.toLowerCase().includes(nomeLower)
   );
+  return arquivo ? path.join(pastaRecente, arquivo) : null;
+}
 
-  if (!arquivo) {
+async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
+  const caminho = localizarArquivoDocumento(pastaRecente, nomeDocumento);
+
+  if (!caminho) {
     throw new Error(`[etapa-5] PDF não encontrado para "${nomeDocumento}" em ${pastaRecente}`);
   }
 
-  const caminho = path.join(pastaRecente, arquivo);
   console.log(`[etapa-5] Lendo PDF: ${caminho}`);
 
   const buffer = fs.readFileSync(caminho);
@@ -650,7 +658,6 @@ async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
     classe:   campos.classe         ?? null,
     reqte:    campos.reqte          ?? null,
     reqdo:    campos.reqdo          ?? null,
-    arquivo,
   };
 
   console.log('[etapa-5] Cabeçalho do documento:', JSON.stringify(cabecalho, null, 2));
@@ -835,14 +842,18 @@ function normalizar(str) {
     .toUpperCase()
     .replace(/\bIMISSAO (DE|NA) POSSE\b/g, 'IMISSAO POSSE') // "Imissão de Posse" == "Imissão na Posse" (classe)
     .replace(/\bESPOLIO DE\b/g, 'ESPOLIO')                // "Espólio de Fulano" == "Espólio Fulano" (nomes)
+    .replace(/\bLIMITADA\b/g, 'LTDA')     // "Limitada" (extenso) → "LTDA"
+    .replace(/\bL\.?T\.?D\.?A\.?\b/g, 'LTDA') // "L.T.D.A", "LTDA.", "L.T.D.A." (pontos colados) → "LTDA"
     .replace(/\/[A-Z]{2,3}\.?\s*$/, '')  // remove /MS. /MT. /SP. no final (foro)
     .replace(/\bS\/A\b/g, 'SA')          // S/A → SA antes de converter barras
     .replace(/\//g, ' ')                  // barras restantes → espaço
-    .replace(/\s+-\s+/g, ' ')            // "Comaves - Industria" → "Comaves Industria"
+    .replace(/[–—]/g, '-')                // en dash / em dash → hífen ASCII (ex: "SUL – DETRAN" == "SUL - DETRAN")
+    .replace(/\s-\s*|\s*-\s/g, ' ')      // "Comaves - Industria" / "Regiao -Sicredi" / "Regiao- Sicredi" (espaço de 1 ou 2 lados) → espaço; hífen sem espaço nenhum (nº processo) preservado
     .replace(/[.,]/g, '')                 // remove pontuação (S.A. → SA)
     .replace(/\b0+(\d+[ªº°])/g, '$1')    // 02ª → 2ª (apenas ordinais, não afeta n° processo)
     .replace(/\s+/g, ' ')
     .replace(/\bS A\b/g, 'SA')           // S. A. → após remoção de pontos e colapso vira "S A"
+    .replace(/\bL\s*T\s*D\s*A\b/g, 'LTDA') // "L. T. D. A." (pontos espaçados) → após colapso vira "L T D A"
     .trim();
 }
 
@@ -858,9 +869,11 @@ function nomesBatem(docVal, esajVal) {
   const e = normalizar(esajVal);
   if (!d && !e) return true;
   if (d === e) return true;
-  // Leniência para "E OUTRO"/"E OUTROS": compara apenas o primeiro nome
-  const baseD = d.replace(/\s+E OUTROS?$/, '').trim();
-  const baseE = e.replace(/\s+E OUTROS?$/, '').trim();
+  // Leniência para "E OUTRO"/"E OUTROS"/"E OUTRA"/"E OUTRAS": compara apenas o primeiro nome.
+  // O sufixo gerado a partir do ESAJ (extrairPartesDoESAJ) é sempre masculino, mesmo quando
+  // a parte é feminina — então o doc pode trazer "E OUTRA(S)" onde o ESAJ mostra "E OUTRO(S)".
+  const baseD = d.replace(/\s+E OUTR[OA]S?$/, '').trim();
+  const baseE = e.replace(/\s+E OUTR[OA]S?$/, '').trim();
   return baseD === baseE;
 }
 
@@ -1328,7 +1341,10 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
     }
 
     console.log(`\n[peticionar] ${i + 1}/${docs.length} — ${label} (${docs[i]})`);
-    const filePath = path.join(pastaRecente, docs[i] + '.pdf');
+    const filePath = localizarArquivoDocumento(pastaRecente, docs[i]);
+    if (!filePath) {
+      throw new Error(`[etapa-8] PDF não encontrado para "${docs[i]}" (${label}) em ${pastaRecente}`);
+    }
 
     await abrirFormularioPeticao(abaAtual);
     const timeoutCarregamento = (faseELaudo && i === 0) ? TIMEOUT_IMPORT_LAUDO : TIMEOUT_IMPORT_PADRAO;
@@ -1564,8 +1580,8 @@ async function processarServico(page, context, servicoAlvo = null) {
   // Etapa 7.3 — Laudo grande: ESAJ rejeita import de petição acima de ~30 MB.
   // Só o documento vindo da aba Laudos (buscarLaudo) costuma estourar esse limite.
   if (buscarLaudo) {
-    const caminhoLaudo = path.join(extracao.pasta.recente, fases.documentosEsperados[0] + '.pdf');
-    const tamanhoBytes = fs.statSync(caminhoLaudo).size;
+    const caminhoLaudo = localizarArquivoDocumento(extracao.pasta.recente, fases.documentosEsperados[0]);
+    const tamanhoBytes = caminhoLaudo ? fs.statSync(caminhoLaudo).size : 0;
     if (tamanhoBytes > LIMITE_TAMANHO_LAUDO_BYTES) {
       const tamanhoMB = (tamanhoBytes / (1024 * 1024)).toFixed(2);
       console.warn(`[etapa-7.3] Laudo (${tamanhoMB} MB) excede o limite de import do ESAJ (${LIMITE_TAMANHO_LAUDO_MB} MB) — encaminhando com subfase PROTOCOLAR.`);
@@ -1577,6 +1593,28 @@ async function processarServico(page, context, servicoAlvo = null) {
       await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
       await aguardarAjax(page);
       return { ok: false, motivo: `laudo excede limite de tamanho do ESAJ (${tamanhoMB} MB > ${LIMITE_TAMANHO_LAUDO_MB} MB)`, ...extracao };
+    }
+  }
+
+  // Etapa 7.4 — Confere se todos os PDFs a peticionar existem na pasta ANTES de abrir
+  // qualquer formulário de petição. Sem isso, um Alvará ausente só era descoberto dentro do
+  // loop de peticionarNoESAJ (Etapa 8-10) — depois do documento principal já ter sido
+  // protocolado — travando a execução inteira com um ENOENT sem chance de desfazer o protocolo.
+  {
+    const docsAPeticionar = fases.temAlvara && fases.documentosEsperados.length > 1
+      ? [fases.documentosEsperados[0], fases.documentosEsperados[1]]
+      : [fases.documentosEsperados[0]];
+    const faltantes = docsAPeticionar.filter(doc => !localizarArquivoDocumento(extracao.pasta.recente, doc));
+    if (faltantes.length > 0) {
+      console.warn(`[etapa-7.4] PDF(s) não encontrado(s) na pasta: ${faltantes.join(', ')} — encaminhando com subfase PROTOCOLAR.`);
+      await esajAba.close();
+      await page.bringToFront();
+      await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
+      extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
+      salvarExtracao(extracao);
+      await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+      await aguardarAjax(page);
+      return { ok: false, motivo: `PDF(s) não encontrado(s) na pasta: ${faltantes.join(', ')}`, ...extracao };
     }
   }
 
@@ -1700,7 +1738,8 @@ async function mainEtapa11() {
 // "Ponto de atenção" = qualquer serviço que não terminou ok (resultado.ok === false),
 // cobrindo todas as etapas que caem para subfase PROTOCOLAR: Etapa 3 (documentos não
 // conferem), Etapa 5 (PDF não encontrado/pasta ausente), Etapa 7 (dados divergem do
-// ESAJ) e Etapa 7.3 (Laudo excede limite de tamanho). Quando a Etapa 7 rodou, detalha
+// ESAJ), Etapa 7.3 (Laudo excede limite de tamanho) e Etapa 7.4 (PDF a peticionar
+// ausente na pasta, incluindo Alvará). Quando a Etapa 7 rodou, detalha
 // os campos que não bateram (conferencia.campos) e, se o fallback de tableTodasPartes
 // (Etapa 7.1) foi tentado, os candidatos testados (fallbackPartes) — preservado aqui
 // porque extracao-protocolo.json é sobrescrito a cada serviço do lote.
