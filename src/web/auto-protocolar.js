@@ -139,8 +139,8 @@ async function loginEsaj(context, pageExistente = null) {
 }
 
 // "doc1 // doc2" → ['doc1', 'doc2']  (doc2 é sempre Alvará quando presente)
-// Fallback de separadores: // → ; → " - " (entre dois códigos de documento)
-// " - " como sufixo de descrição continua sendo removido no caso de doc único.
+// Fallback de separadores: // → ; → " - " → " " (entre dois códigos de documento)
+// " - " ou " " como sufixo de descrição continua sendo removido no caso de doc único.
 function parsearDocsObservacao(observacao) {
   const obs = observacao.trim();
 
@@ -163,6 +163,20 @@ function parsearDocsObservacao(observacao) {
   const partesDash = obs.split(/\s+-\s+/);
   if (partesDash.length > 1 && partesDash.every(p => /^[A-Za-z]+\d/.test(p.trim()) && !p.trim().includes(' ')))
     return partesDash.map(d => d.trim()).filter(Boolean);
+
+  // Um espaço simples também pode ser o separador (ex: "L28639_8398 38380").
+  // Só vira separador quando o trecho inteiro após o 1º espaço é, sozinho, outro
+  // código (letras+dígito ou puramente numérico, sem espaço interno) — caso contrário
+  // é descrição do doc único (ex: "L28639_8398 anexo do processo" mantém extrairCodigo()
+  // cortando a descrição).
+  const pareceCodigo = (token) => /^[A-Za-z]+\d/.test(token) || /^\d+$/.test(token);
+  const idxEspaco = obs.indexOf(' ');
+  if (idxEspaco > -1) {
+    const antes  = obs.slice(0, idxEspaco).trim();
+    const depois = obs.slice(idxEspaco + 1).trim();
+    if (pareceCodigo(antes) && !depois.includes(' ') && pareceCodigo(depois))
+      return [antes, depois];
+  }
 
   return obs ? [extrairCodigo(obs)] : [];
 }
@@ -618,6 +632,29 @@ function localizarArquivoDocumento(pastaRecente, nomeDocumento) {
   return arquivo ? path.join(pastaRecente, arquivo) : null;
 }
 
+// Rodapé alinhado à paginação: 1ª linha não vazia de cada página traz
+// "<código do doc>  <nº da página>" (ex: "L26185_8607  1", "VCP26185_68310  1").
+// Confirmado em Laudo e Alvará, sempre na mesma posição (ver serviço 26185) — usado para
+// confirmar que o PDF resolvido por localizarArquivoDocumento (busca fuzzy por nome de
+// arquivo) é de fato o documento esperado, e não outro arquivo que só contém o código
+// como substring do nome.
+const RODAPE_PAGINACAO_RE = /^(\S+)\s+\d+\s*$/;
+
+async function extrairCodigoRodape(pastaRecente, nomeDocumento) {
+  const caminho = localizarArquivoDocumento(pastaRecente, nomeDocumento);
+  if (!caminho) return null;
+
+  const buffer = fs.readFileSync(caminho);
+  const { text } = await pdfParse(buffer, { max: 1 }); // 1ª página basta — stampa se repete em todas
+  const primeiraLinha = text.split('\n').find(l => l.trim());
+  const m = primeiraLinha?.trim().match(RODAPE_PAGINACAO_RE);
+  return m ? m[1] : null;
+}
+
+function codigoRodapeBate(codigoRodape, nomeDocumento) {
+  return !!codigoRodape && codigoRodape.trim().toUpperCase() === nomeDocumento.trim().toUpperCase();
+}
+
 async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   const caminho = localizarArquivoDocumento(pastaRecente, nomeDocumento);
 
@@ -769,7 +806,10 @@ async function extrairPartesDoESAJ(esajPage) {
   const partes = [];
   for (const [participacao, nome] of porRole) {
     const total = todasPartes ? todasPartes[participacao].length : 0;
-    const sufixo = total > 2 ? ' E OUTROS' : total === 2 ? ' E OUTRO' : '';
+    // Singular ("E OUTRO") e plural ("E OUTROS") não são mais distinguidos por contagem:
+    // nomesBatem() já ignora essa variação na conferência (Etapa 7), então manter a distinção
+    // aqui só arriscava contagem errada gerar divergência sem motivo real.
+    const sufixo = total > 1 ? ' E OUTROS' : '';
     partes.push({ participacao, nome: nome + sufixo });
   }
 
@@ -1000,6 +1040,23 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
   }
   await tabFases.click();
   await aguardarAjax(page);
+
+  // O clique às vezes não ativa a aba (handler do widget ainda não vinculado
+  // logo após o AJAX do Editar) — activeIndex do TabView fica em 0 mesmo com
+  // a aba Fases localizada e clicada sem erro. Confirma via aria-selected no
+  // <li> pai e reclica até ativar de fato, antes de procurar o Encaminhar.
+  const abaFasesAtivada = await aguardarElemento(async () => {
+    const selecionada = await tabFases.locator('xpath=ancestor::li[1]')
+      .getAttribute('aria-selected').catch(() => null);
+    if (selecionada === 'true') return true;
+    await tabFases.click().catch(() => {});
+    await aguardarAjax(page);
+    return false;
+  }, { timeout: 8000, intervalo: 500 });
+  if (!abaFasesAtivada) {
+    await capturarDiagnostico(page, 'etapa11_aba-fases-nao-ativou');
+    throw new Error('[etapa-11] Aba Fases não ativou após múltiplas tentativas de clique.');
+  }
 
   // Botão Encaminhar — testa IDs conhecidos; fallback por button no painel ativo.
   // Mesmo motivo do poll acima: o painel pode ainda estar renderizando.
@@ -1596,14 +1653,16 @@ async function processarServico(page, context, servicoAlvo = null) {
     }
   }
 
+  // Docs a peticionar (principal + Alvará quando presente) — usado nas Etapas 7.4 e 7.5.
+  const docsAPeticionar = fases.temAlvara && fases.documentosEsperados.length > 1
+    ? [fases.documentosEsperados[0], fases.documentosEsperados[1]]
+    : [fases.documentosEsperados[0]];
+
   // Etapa 7.4 — Confere se todos os PDFs a peticionar existem na pasta ANTES de abrir
   // qualquer formulário de petição. Sem isso, um Alvará ausente só era descoberto dentro do
   // loop de peticionarNoESAJ (Etapa 8-10) — depois do documento principal já ter sido
   // protocolado — travando a execução inteira com um ENOENT sem chance de desfazer o protocolo.
   {
-    const docsAPeticionar = fases.temAlvara && fases.documentosEsperados.length > 1
-      ? [fases.documentosEsperados[0], fases.documentosEsperados[1]]
-      : [fases.documentosEsperados[0]];
     const faltantes = docsAPeticionar.filter(doc => !localizarArquivoDocumento(extracao.pasta.recente, doc));
     if (faltantes.length > 0) {
       console.warn(`[etapa-7.4] PDF(s) não encontrado(s) na pasta: ${faltantes.join(', ')} — encaminhando com subfase PROTOCOLAR.`);
@@ -1615,6 +1674,32 @@ async function processarServico(page, context, servicoAlvo = null) {
       await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
       await aguardarAjax(page);
       return { ok: false, motivo: `PDF(s) não encontrado(s) na pasta: ${faltantes.join(', ')}`, ...extracao };
+    }
+  }
+
+  // Etapa 7.5 — Confere o rodapé (alinhado à paginação) de cada PDF a peticionar: a 1ª
+  // linha não vazia da 1ª página traz "<código do doc>  <nº da página>" (ex: "L26185_8607  1"),
+  // presente tanto em Laudo quanto em Alvará, na mesma posição. Pega o caso em que a busca
+  // fuzzy da Etapa 7.4 resolveu um PDF existente na pasta, mas que não é, de fato, o
+  // documento esperado (nome do arquivo só contém o código por coincidência/prefixo).
+  {
+    const divergentes = [];
+    for (const doc of docsAPeticionar) {
+      const codigoRodape = await extrairCodigoRodape(extracao.pasta.recente, doc);
+      if (!codigoRodapeBate(codigoRodape, doc)) divergentes.push({ doc, codigoRodape });
+    }
+    extracao.conferenciaRodape = { docsAPeticionar, divergentes };
+    salvarExtracao(extracao);
+    if (divergentes.length > 0) {
+      console.warn(`[etapa-7.5] Rodapé não confere com o documento esperado: ${JSON.stringify(divergentes)} — encaminhando com subfase PROTOCOLAR.`);
+      await esajAba.close();
+      await page.bringToFront();
+      await encaminharServico(page, { nome: ENCAMINHAR_NOME, observacao: fases.observacao, subfase: 'PROTOCOLAR' });
+      extracao.encaminhamento = { nome: ENCAMINHAR_NOME, subfase: 'PROTOCOLAR', observacao: fases.observacao };
+      salvarExtracao(extracao);
+      await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
+      await aguardarAjax(page);
+      return { ok: false, motivo: `rodapé não confere: ${JSON.stringify(divergentes)}`, ...extracao };
     }
   }
 
@@ -1878,6 +1963,8 @@ module.exports = {
   abrirProcessoNoESAJ,
   localizarPastaServico,
   extrairCabecalhoDocumento,
+  extrairCodigoRodape,
+  codigoRodapeBate,
   extrairPartesDoESAJ,
   extrairCabecalhoDoESAJ,
   encaminharServico,
