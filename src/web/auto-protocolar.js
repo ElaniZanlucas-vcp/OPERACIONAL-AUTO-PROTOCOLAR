@@ -159,26 +159,26 @@ function parsearDocsObservacao(observacao) {
   if (obs.includes(';'))
     return obs.split(';').map(extrairCodigo).filter(Boolean);
 
-  // " - " só vira separador quando ambos os lados parecem código (letras+dígito, sem espaço interno)
-  const partesDash = obs.split(/\s+-\s+/);
-  if (partesDash.length > 1 && partesDash.every(p => /^[A-Za-z]+\d/.test(p.trim()) && !p.trim().includes(' ')))
-    return partesDash.map(d => d.trim()).filter(Boolean);
+  if (!obs) return [];
 
-  // Um espaço simples também pode ser o separador (ex: "L28639_8398 38380").
-  // Só vira separador quando o trecho inteiro após o 1º espaço é, sozinho, outro
-  // código (letras+dígito ou puramente numérico, sem espaço interno) — caso contrário
-  // é descrição do doc único (ex: "L28639_8398 anexo do processo" mantém extrairCodigo()
-  // cortando a descrição).
+  // Sem separador explícito (// ou ;): lê os tokens a partir do início enquanto
+  // parecerem código de documento (letras+dígito ou puramente numérico — ex: 38380).
+  // Um "-" isolado entre dois códigos é tratado como separador (ex: "L28639_8398 - 38380")
+  // e pulado sem encerrar a leitura; qualquer outro token que não pareça código encerra
+  // a leitura — o restante da observação (nota manual, descrição etc.) é descartado.
+  // Cobre tanto o caso de 1 doc com descrição solta (ex: "L28639_8398 anexo do processo")
+  // quanto 2 docs seguidos de nota livre (ex: "L27086_8587 VCP27086_68311 - não foi
+  // protocolado o alvará..." — sem isso, o 2º código era engolido pela descrição e
+  // fases.temAlvara saía `false`, fazendo o Alvará nunca ser peticionado).
   const pareceCodigo = (token) => /^[A-Za-z]+\d/.test(token) || /^\d+$/.test(token);
-  const idxEspaco = obs.indexOf(' ');
-  if (idxEspaco > -1) {
-    const antes  = obs.slice(0, idxEspaco).trim();
-    const depois = obs.slice(idxEspaco + 1).trim();
-    if (pareceCodigo(antes) && !depois.includes(' ') && pareceCodigo(depois))
-      return [antes, depois];
+  const codigos = [];
+  for (const token of obs.split(/\s+/)) {
+    if (token === '-') continue;
+    if (!pareceCodigo(token)) break;
+    codigos.push(token);
   }
 
-  return obs ? [extrairCodigo(obs)] : [];
+  return codigos.length > 0 ? codigos : [extrairCodigo(obs)];
 }
 
 function salvarExtracao(dados) {
@@ -291,6 +291,24 @@ async function extrairDocumentos(page, temAlvara) {
 
   console.log(`[etapa-3] Docs encontrados (${documentos.length}): ${JSON.stringify(documentos)}`);
   return documentos;
+}
+
+// Fase Laudo + Alvará: o Laudo não deixa nenhuma linha na aba Documentos (vem só da
+// aba Laudos), então não faz sentido recortar as "2 mais recentes" de Documentos como
+// no fluxo normal — isso arriscava pegar um doc antigo/irrelevante de outra fase na
+// 2ª posição. Em vez de recorte por posição, varre a aba inteira e pega diretamente o
+// Alvará mais recente por tipoDocumento.
+async function extrairAlvaraMaisRecente(page) {
+  console.log('[etapa-3] Clicando na aba Documentos...');
+  await page.locator(SEL.TAB_DOCS).click();
+  await aguardarAjax(page);
+
+  const linhas = await extrairLinhasDocumentos(page);
+  const alvara = linhas.find(d => d.tipoDocumento.toUpperCase().includes('ALVARA')) ?? null;
+  if (alvara) alvara.responsavel = null; // Alvará nunca é o documento principal (índice 0)
+
+  console.log(`[etapa-3] Alvará mais recente: ${JSON.stringify(alvara)}`);
+  return alvara;
 }
 
 // Etapa 3.2 — fallback: o doc esperado pode não estar entre os "mais recentes"
@@ -897,11 +915,34 @@ function normalizar(str) {
     .trim();
 }
 
+// Glifo acentuado ausente na fonte do PDF às vezes vira espaço em branco na extração
+// (ex.: "TRÊS" → "TR S") em vez de ser simplesmente omitido — string final tem o MESMO
+// comprimento do original, só essa uma posição troca a letra por espaço. Diferente do
+// mojibake MacRoman ([[project_pdf_mojibake_macroman]]), que substitui por símbolo
+// tipográfico; aqui não sobra sinal nenhum além do espaço, por isso a checagem exige
+// mesmo comprimento e exatamente 1 posição divergente (letra de um lado, espaço do outro)
+// — restritivo o bastante para não mascarar nomes realmente diferentes.
+function diferencaApenasEspacoPorLetra(d, e) {
+  if (d.length !== e.length) return false;
+  let divergiu = false;
+  for (let i = 0; i < d.length; i++) {
+    if (d[i] === e[i]) continue;
+    if (divergiu) return false;
+    divergiu = true;
+    const par = [d[i], e[i]];
+    if (!par.includes(' ')) return false;
+    const outro = par.find(c => c !== ' ');
+    if (!/[A-Z]/.test(outro)) return false;
+  }
+  return divergiu;
+}
+
 function camposBatem(docVal, esajVal) {
   const d = normalizar(docVal);
   const e = normalizar(esajVal);
   if (!d && !e) return true;
-  return d === e;
+  if (d === e) return true;
+  return diferencaApenasEspacoPorLetra(d, e);
 }
 
 function nomesBatem(docVal, esajVal) {
@@ -909,6 +950,7 @@ function nomesBatem(docVal, esajVal) {
   const e = normalizar(esajVal);
   if (!d && !e) return true;
   if (d === e) return true;
+  if (diferencaApenasEspacoPorLetra(d, e)) return true;
   // Leniência para "E OUTRO"/"E OUTROS"/"E OUTRA"/"E OUTRAS": compara apenas o primeiro nome.
   // O sufixo gerado a partir do ESAJ (extrairPartesDoESAJ) é sempre masculino, mesmo quando
   // a parte é feminina — então o doc pode trazer "E OUTRA(S)" onde o ESAJ mostra "E OUTRO(S)".
@@ -1381,7 +1423,7 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
   // conferirmos visualmente que o arquivo carrega corretamente no ESAJ.
   const faseELaudo = /LAUDO/i.test(fase);
   const TIMEOUT_IMPORT_PADRAO = 3000;
-  const TIMEOUT_IMPORT_LAUDO  = 30000;
+  const TIMEOUT_IMPORT_LAUDO  = 60000;
 
   console.log(`[peticionar] Fase: ${fase} | Subfase: ${subfase} | Código: ${codigo} | Total docs: ${docs.length}`);
 
@@ -1463,20 +1505,19 @@ async function processarServico(page, context, servicoAlvo = null) {
   // segue o fluxo normal de Documentos, igual às demais Fases.
   const subfaseNormalizada = fases.subfase.toUpperCase().trim().replace(/\s*-\s*/g, '-');
   const buscarLaudo = /LAUDO/i.test(fases.fase) && subfaseNormalizada === 'PROTOCOLAR';
-  const documentosBrutos = await extrairDocumentos(page, fases.temAlvara);
 
   let documentosEncontrados;
   if (buscarLaudo) {
-    // O documento principal (Laudo) não aparece em Documentos — vem da aba Laudos.
-    // Com Alvará, ele é identificado por tipoDocumento (não pela posição — a linha
-    // mais recente em Documentos pode ser um doc antigo/irrelevante de outra fase).
-    const alvara = fases.temAlvara
-      ? documentosBrutos.filter(d => d.tipoDocumento.toUpperCase().includes('ALVARA'))
-      : [];
+    // O documento principal (Laudo) não aparece em Documentos — vem da aba Laudos. Com
+    // Alvará, extrai só o registro de Alvará mais recente (por tipoDocumento) — não os
+    // 2 mais recentes: o Laudo não ocupa posição na aba Documentos, então não há "par"
+    // de linhas a recortar ali, e a linha mais recente pode ser um doc antigo/irrelevante
+    // de outra fase (o Alvará real não é necessariamente ela).
+    const alvara = fases.temAlvara ? await extrairAlvaraMaisRecente(page) : null;
     const laudos = await extrairAbaLaudos(page);
-    documentosEncontrados = laudos[0] ? [laudos[0], ...alvara] : alvara;
+    documentosEncontrados = laudos[0] ? [laudos[0], ...(alvara ? [alvara] : [])] : (alvara ? [alvara] : []);
   } else {
-    documentosEncontrados = documentosBrutos;
+    documentosEncontrados = await extrairDocumentos(page, fases.temAlvara);
   }
 
   let confere = conferirDocumentos(fases.documentosEsperados, documentosEncontrados);
@@ -1549,13 +1590,19 @@ async function processarServico(page, context, servicoAlvo = null) {
   extracao.numeroProcesso = numeroProcesso;
   salvarExtracao(extracao);
 
-  // Etapa 5 — Localizar pasta e extrair cabeçalho do PDF
-  let pastaServico, pastaRecente, cabecalhoDoc;
+  // Etapa 5 — Localizar pasta e extrair cabeçalho do(s) PDF(s). No fluxo de Laudo com
+  // Alvará, o Alvará tem seu próprio cabeçalho extraído aqui também — ambos precisam
+  // ser conferidos contra o ESAJ antes de peticionar qualquer um dos dois (Etapa 7).
+  let pastaServico, pastaRecente, cabecalhoDoc, cabecalhoAlvara;
   try {
     ({ pastaServico, pastaRecente } = localizarPastaServico(extracao.servico));
     extracao.pasta = { servico: pastaServico, recente: pastaRecente };
     cabecalhoDoc = await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[0]);
     extracao.cabecalhoDoc = cabecalhoDoc;
+    if (buscarLaudo && fases.temAlvara && fases.documentosEsperados.length > 1) {
+      cabecalhoAlvara = await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[1]);
+      extracao.cabecalhoAlvara = cabecalhoAlvara;
+    }
     salvarExtracao(extracao);
   } catch (err) {
     console.warn(`[etapa-5] ${err.message} — encaminhando com subfase PROTOCOLAR.`);
@@ -1579,42 +1626,54 @@ async function processarServico(page, context, servicoAlvo = null) {
   console.log(`[etapa-6] Partes: ${JSON.stringify(resultadoPartes.partes)}`);
   console.log(`[etapa-6] Cabeçalho ESAJ: ${JSON.stringify(cabecalhoESAJ)}`);
 
-  // Etapa 7 — Conferir dados do documento com ESAJ
+  // Etapa 7 — Conferir dados do(s) documento(s) com ESAJ. No fluxo de Laudo com Alvará,
+  // o Alvará também é conferido contra o mesmo cabeçalho ESAJ (mesmo processo) — uma
+  // divergência em qualquer um dos dois bloqueia o peticionamento de ambos.
   const conferencia = conferirEtapa7(extracao.cabecalhoDoc, extracao.esaj);
   extracao.conferencia = conferencia;
+  const conferenciaAlvara = cabecalhoAlvara ? conferirEtapa7(cabecalhoAlvara, extracao.esaj) : null;
+  if (conferenciaAlvara) extracao.conferenciaAlvara = conferenciaAlvara;
   salvarExtracao(extracao);
 
-  if (!conferencia.ok) {
-    let divergenciaSuperada = false;
+  const conferenciasPendentes = [
+    { label: 'documento principal', conferencia, chave: 'fallbackPartes' },
+    ...(conferenciaAlvara ? [{ label: 'Alvará', conferencia: conferenciaAlvara, chave: 'fallbackPartesAlvara' }] : []),
+  ].filter(c => !c.conferencia.ok);
 
+  if (conferenciasPendentes.length > 0) {
+    let divergenciaSuperada = true;
     const todasPartes = extracao.esaj.todasPartes;
-    if (todasPartes) {
-      console.log('[etapa-7.1] tableTodasPartes disponível — tentando fallback de partes...');
+
+    for (const { label, conferencia: c, chave } of conferenciasPendentes) {
+      if (!todasPartes) {
+        extracao[chave] = { tentativas: [], resultado: false, motivo: 'tableTodasPartes ausente' };
+        divergenciaSuperada = false;
+        continue;
+      }
+      console.log(`[etapa-7.1] tableTodasPartes disponível — tentando fallback de partes (${label})...`);
       const tentativas = [];
       // Percorre TODOS os campos divergentes (sem short-circuit): usar .every() aqui pararia
       // no primeiro campo sem match e nunca testaria os seguintes (ex: "reu" batendo via
       // fallback ficava sem registro se "autor" já tivesse falhado antes na lista de campos).
-      const resultados = conferencia.campos.map(r => {
+      const resultados = c.campos.map(r => {
         if (r.bate) return true;
         if (r.campo !== 'autor' && r.campo !== 'reu') return false;
         const role = r.campo === 'autor' ? 'AUTOR' : 'RÉU';
         const candidatos = todasPartes[role] ?? [];
         const bateu = candidatos.some(cand => nomesBatem(r.doc, cand));
-        console.log(`  [etapa-7.1] ${r.campo}: doc="${r.doc}" candidatos=[${candidatos.join(' | ')}] → ${bateu ? '[OK]' : '[XX]'}`);
+        console.log(`  [etapa-7.1] ${r.campo} (${label}): doc="${r.doc}" candidatos=[${candidatos.join(' | ')}] → ${bateu ? '[OK]' : '[XX]'}`);
         tentativas.push({ campo: r.campo, doc: r.doc, candidatos, bateu });
         return bateu;
       });
-      divergenciaSuperada = resultados.every(Boolean);
+      const resultadoDoc = resultados.every(Boolean);
       // Registro persistente do fallback — o console some entre execuções, mas isto
       // sobrevive em extracao-protocolo.json (até o próximo serviço) e no execucao.md
       // (para a duração de todo o lote), permitindo diagnosticar um "sem match" depois.
-      extracao.fallbackPartes = { tentativas, resultado: divergenciaSuperada };
-      salvarExtracao(extracao);
-      console.log(`[etapa-7.1] Fallback: ${divergenciaSuperada ? 'match encontrado — prosseguindo' : 'sem match'}.`);
-    } else {
-      extracao.fallbackPartes = { tentativas: [], resultado: false, motivo: 'tableTodasPartes ausente' };
-      salvarExtracao(extracao);
+      extracao[chave] = { tentativas, resultado: resultadoDoc };
+      if (!resultadoDoc) divergenciaSuperada = false;
     }
+    salvarExtracao(extracao);
+    console.log(`[etapa-7.1] Fallback: ${divergenciaSuperada ? 'match encontrado em todos os documentos — prosseguindo' : 'sem match em ao menos um documento'}.`);
 
     if (!divergenciaSuperada) {
       console.warn('[etapa-7] Dados divergem — notificação por e-mail pendente (configurar GMAIL_USUARIO/GMAIL_APP_PASSWORD).');
@@ -1628,7 +1687,7 @@ async function processarServico(page, context, servicoAlvo = null) {
       salvarExtracao(extracao);
       await page.goto(SIGAD_LOGIN_URL, { waitUntil: 'load', timeout: 60000 });
       await aguardarAjax(page);
-      return { ok: false, motivo: 'dados divergem entre documento e ESAJ', ...extracao };
+      return { ok: false, motivo: 'dados divergem entre documento(s) e ESAJ', ...extracao };
     }
   }
 
@@ -1869,6 +1928,26 @@ function gerarRelatorioExecucao(servicosDoLote, relatorioExecucao) {
           linhas.push(`  - \`${t.campo}\`: doc="${t.doc}" | candidatos=[${t.candidatos.join(' | ')}]`);
         }
       }
+      // Laudo com Alvará: o Alvará tem sua própria conferência (Etapa 7) e fallback (7.1)
+      // contra o mesmo cabeçalho ESAJ — reportados separadamente quando divergentes.
+      const divergenciasAlvara = resultado.conferenciaAlvara?.campos?.filter(c => !c.bate) ?? [];
+      if (divergenciasAlvara.length > 0) {
+        linhas.push('- **Campos divergentes (Alvará):**');
+        for (const d of divergenciasAlvara) {
+          linhas.push(`  - \`${d.campo}\`: doc="${d.doc}" | esaj="${d.esaj}"`);
+        }
+      }
+      const tentativasAlvara = resultado.fallbackPartesAlvara?.tentativas ?? [];
+      if (resultado.fallbackPartesAlvara && !resultado.fallbackPartesAlvara.resultado) {
+        linhas.push('- **Fallback tableTodasPartes (Etapa 7.1 — Alvará):**');
+        if (resultado.fallbackPartesAlvara.motivo) {
+          linhas.push(`  - ${resultado.fallbackPartesAlvara.motivo}`);
+        }
+        for (const t of tentativasAlvara) {
+          if (t.bateu) continue;
+          linhas.push(`  - \`${t.campo}\`: doc="${t.doc}" | candidatos=[${t.candidatos.join(' | ')}]`);
+        }
+      }
       linhas.push('');
     }
   }
@@ -1958,6 +2037,7 @@ module.exports = {
   processarServico,
   extrairFases,
   extrairDocumentos,
+  extrairAlvaraMaisRecente,
   extrairAbaLaudos,
   conferirDocumentos,
   abrirProcessoNoESAJ,

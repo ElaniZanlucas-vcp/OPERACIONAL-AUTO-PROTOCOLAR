@@ -21,9 +21,19 @@ Vamos considerar que este erro pode acontecer apenas com o documento de Laudo po
 Caso exceda o tamanho, faça o fluxo de Encaminhar -> Protocolar e adicione como divergência em execucao.md
 
 
-[CORREÇÃO-LAUDO] $\green ✔$
-Considere que quando temos a Fase Laudo, a extração do doc não é feita na aba Documentos, e sim na aba Laudos.
+[CORREÇÃO-LAUDO] 
+Considere que quando temos a Fase Laudo, a extração do doc não é feita na aba Documentos, e sim na aba Laudos (implementado corretamente).
 Caso possua alvará (2 docs em Observação), o Alvará continua sendo extraído de Documentos e apenas Laudo é extraído da aba Laudos.
+A ordem de protocolo continua: Primeiramente protocolar Laudo e depois Alvará.
+Segue o fluxo para Laudo com Alvará:
+0. Extrair docs da aba Fases em Observação e verificar existência de Alvará
+1. Extrair Laudo da aba de Laudos (implementado corretamente)
+2. Extrair Alvará da aba Documentos
+3. Acessar Dados Básicos e clicar no Processo 
+4. Fazer as devidas verificações para Laudo e Alvará
+4. 1. Se tudo estiver correto, peticionar Laudo e Alvará, respectivamente
+4. 2. Se pelo menos um tiver divergência, clicar em Encaminhar (não peticione nenhum arquivo)
+5. Continuar fluxo normalmente
 
 Implemente esta extração em forma de teste-laudo e vamos fazer a verificação do retorno dos dados desta aba.
 

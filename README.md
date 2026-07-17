@@ -139,11 +139,9 @@ node src/web/auto-protocolar.js
 Clica na aba Fases do dialog `formDlgVerServico`. Lê a primeira linha de `tabListaFase_data`: Fase, Subfase, Observação. A Observação contém os nomes dos documentos esperados (doc2, quando presente, é sempre Alvará).
 
 **`parsearDocsObservacao()` — separadores em cascata:**
-1. `//` — separador padrão.
-2. `;` — fallback se não há `//`.
-3. `" - "` — só é tratado como separador quando **ambos** os lados parecem código de documento (`letras+dígito`, sem espaço interno); caso contrário é tratado como sufixo de descrição e descartado.
-
-Cada token passa por `extrairCodigo()`, que corta a descrição após o código (`"CÓDIGO - descrição"`, `"CÓDIGO. descrição"`, `"CÓDIGO descrição"`) — exceto códigos puramente numéricos (ex: `38380`), devolvidos inteiros.
+1. `//` — separador padrão. Cada token passa por `extrairCodigo()`, que corta a descrição após o código (`"CÓDIGO - descrição"`, `"CÓDIGO. descrição"`, `"CÓDIGO descrição"`) — exceto códigos puramente numéricos (ex: `38380`), devolvidos inteiros.
+2. `;` — fallback se não há `//`. Mesmo tratamento por `extrairCodigo()`.
+3. Sem `//` nem `;`: lê os tokens (separados por espaço) a partir do início da Observação enquanto parecerem código de documento (`letras+dígito` ou puramente numérico, ex: `38380`). Um `-` isolado entre dois códigos (ex: `"L28639_8398 - 38380"`) é tratado como separador e pulado sem encerrar a leitura; o primeiro token que não pareça código encerra a leitura, e o restante da Observação (nota manual, descrição etc.) é descartado — cobre tanto 1 doc com descrição solta (`"L28639_8398 anexo do processo"` → só o código) quanto 2 docs seguidos de nota livre (`"L27086_8587 VCP27086_68311 - não foi protocolado..."` → os dois códigos, nota descartada).
 
 ---
 
