@@ -8,6 +8,7 @@ const pdfParse = require('pdf-parse');
 // const nodemailer       = require('nodemailer');
 const { abrirBrowser } = require('./crawler');
 const { fazerLogin }   = require('./auth');
+const { avaliarSimilaridade, extrairCampoDoTexto } = require('./claude-fallback');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -527,6 +528,18 @@ const SIGLAS_REU = [
 const FIM_QUALIFICACAO_PERITO_RE = /^VINICIUS\s+COUTINHO\b/i;
 const MAX_LINHAS_NOME_PARTE = 3;
 
+// "INVENTARIANTE(S)" está em SIGLAS_AUTOR (rótulo de campo em ações de inventário, ex:
+// "INVENTARIANTE: FULANO") mas também aparece como palavra comum dentro do próprio nome
+// de réu/autor no idiomatismo "ESPÓLIO DE X, NA PESSOA DO(A) SEU(SUA) INVENTARIANTE..." —
+// quando esse nome quebra de linha bem antes de "INVENTARIANTE" (comum por ser longo),
+// INICIO_CAMPO confunde a palavra com um novo rótulo de campo e fecha reqte/reqdo cedo
+// demais, perdendo o resto do nome (ex: serviço 28.531 — "...NA PESSOA DO SEU" sem
+// "INVENTARIANTE E OUTROS"). Só entra em ação quando a linha já capturada termina em
+// "SEU"/"SUA" logo antes da quebra — não interfere no caso genuíno de "INVENTARIANTE:"
+// abrindo campo do zero (capturandoKey ainda nulo nesse caso).
+const CONTINUACAO_INVENTARIANTE_RE = /^INVENTARIANTES?\b/i;
+const FIM_PESSOA_DO_SEU_RE = /\b(SEU|SUA)$/i;
+
 // Extrai os campos do cabeçalho do PDF em passo único e na ordem esperada do documento.
 // Cada campo só é procurado após o campo anterior ter sido encontrado (ou descartado),
 // impedindo que "AÇÃO" seja capturada de "CERTIFICAÇÃO" no corpo ou de menções tardias.
@@ -567,6 +580,14 @@ function extrairCamposSequenciais(linhas) {
       if (ehNomeParte && FIM_QUALIFICACAO_PERITO_RE.test(trimmed)) {
         // Início do parágrafo de qualificação do perito — nunca é parte do nome.
         fecharCampo();
+        continue;
+      } else if (
+        ehNomeParte &&
+        CONTINUACAO_INVENTARIANTE_RE.test(trimmed) &&
+        FIM_PESSOA_DO_SEU_RE.test(partes[partes.length - 1] ?? '')
+      ) {
+        // Continuação de "NA PESSOA DO(A) SEU(SUA) INVENTARIANTE..." — não é novo campo.
+        partes.push(trimmed);
         continue;
       } else if (INICIO_CAMPO.test(trimmed)) {
         fecharCampo();
@@ -651,12 +672,21 @@ function localizarArquivoDocumento(pastaRecente, nomeDocumento) {
 }
 
 // Rodapé alinhado à paginação: 1ª linha não vazia de cada página traz
-// "<código do doc>  <nº da página>" (ex: "L26185_8607  1", "VCP26185_68310  1").
-// Confirmado em Laudo e Alvará, sempre na mesma posição (ver serviço 26185) — usado para
-// confirmar que o PDF resolvido por localizarArquivoDocumento (busca fuzzy por nome de
-// arquivo) é de fato o documento esperado, e não outro arquivo que só contém o código
-// como substring do nome.
+// "<código do doc>  <nº da página>" (ex: "L26185_8607  1", "VCP26185_68310  1"). Confirmado
+// em Laudo e Alvará, sempre na mesma posição (ver serviço 26185) — usado para confirmar que
+// o PDF resolvido por localizarArquivoDocumento (busca fuzzy por nome de arquivo) é de fato
+// o documento esperado, e não outro arquivo que só contém o código como substring do nome.
+// Alguns PDFs não têm espaço nenhum entre código e nº de página (ex: "VCP19240_684401",
+// serviço 19.240) — como ambos são dígitos, não há como separar os dois de forma confiável
+// sem saber o código esperado de antemão (\S+ genérico pode "roubar" dígitos do nº de
+// página). Por isso, RODAPE_PAGINACAO_RE só serve de fallback para log/diagnóstico quando o
+// código encontrado não é o esperado (documento errado); a extração normal ancora no código
+// já conhecido (nomeDocumento) e aceita zero ou mais espaços antes do nº de página.
 const RODAPE_PAGINACAO_RE = /^(\S+)\s+\d+\s*$/;
+
+function escapeRegExp(texto) {
+  return texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 async function extrairCodigoRodape(pastaRecente, nomeDocumento) {
   const caminho = localizarArquivoDocumento(pastaRecente, nomeDocumento);
@@ -664,8 +694,15 @@ async function extrairCodigoRodape(pastaRecente, nomeDocumento) {
 
   const buffer = fs.readFileSync(caminho);
   const { text } = await pdfParse(buffer, { max: 1 }); // 1ª página basta — stampa se repete em todas
-  const primeiraLinha = text.split('\n').find(l => l.trim());
-  const m = primeiraLinha?.trim().match(RODAPE_PAGINACAO_RE);
+  const primeiraLinha = text.split('\n').find(l => l.trim())?.trim();
+  if (!primeiraLinha) return null;
+
+  const reEsperado = new RegExp(`^(${escapeRegExp(nomeDocumento)})\\s*\\d+\\s*$`, 'i');
+  const mEsperado = primeiraLinha.match(reEsperado);
+  if (mEsperado) return mEsperado[1];
+
+  // Código diferente do esperado (documento errado) — regex genérico só para diagnóstico.
+  const m = primeiraLinha.match(RODAPE_PAGINACAO_RE);
   return m ? m[1] : null;
 }
 
@@ -716,7 +753,7 @@ async function extrairCabecalhoDocumento(pastaRecente, nomeDocumento) {
   };
 
   console.log('[etapa-5] Cabeçalho do documento:', JSON.stringify(cabecalho, null, 2));
-  return cabecalho;
+  return { cabecalho, textoDocumento: text };
 }
 
 // ── Etapa 6: Partes e cabeçalho do ESAJ ──────────────────────────────────────
@@ -989,6 +1026,48 @@ function conferirEtapa7(cabecalhoDoc, esaj) {
   }
 
   return { ok, campos: resultado };
+}
+
+// ── Etapa 7.0 (via IA): recuperar campo vazio da extração sequencial do PDF ────
+// extrairCamposSequenciais (Etapa 5) às vezes não localiza um campo (ex: "vara"/"foro"
+// quando o texto do #aoJuizo foge do padrão esperado) — cabecalhoDoc[chave] fica vazio
+// mesmo quando o ESAJ tem um valor cadastrado para o mesmo campo. Antes de comparar,
+// busca o valor no texto bruto do PDF via Claude (extrairCampoDoTexto). Só aplica o
+// valor encontrado quando confianca === 'alta' — caso contrário, segue para a
+// conferência normal (Etapa 7) e, se necessário, o fallback de similaridade (Etapa 7.5).
+async function preencherCamposVaziosComIA(cabecalhoDoc, esaj, textoDocumento) {
+  if (!textoDocumento) return null;
+
+  const { partes, cabecalho: esajCab } = esaj;
+  const autorESAJ = partes.find(p => p.participacao === 'AUTOR')?.nome ?? '';
+  const reuESAJ   = partes.find(p => p.participacao === 'RÉU')?.nome   ?? '';
+
+  const mapa = [
+    { campo: 'vara',     chaveDoc: 'vara',     esajVal: esajCab.vara },
+    { campo: 'foro',     chaveDoc: 'foro',     esajVal: esajCab.foro },
+    { campo: 'processo', chaveDoc: 'processo', esajVal: esajCab.numeroProcesso },
+    { campo: 'classe',   chaveDoc: 'classe',   esajVal: esajCab.classe },
+    { campo: 'autor',    chaveDoc: 'reqte',    esajVal: autorESAJ },
+    { campo: 'reu',      chaveDoc: 'reqdo',    esajVal: reuESAJ },
+  ];
+
+  const tentativas = [];
+  for (const { campo, chaveDoc, esajVal } of mapa) {
+    if (cabecalhoDoc[chaveDoc] || !esajVal) continue; // só tenta quando doc vazio e ESAJ tem valor
+    let resultado;
+    try {
+      resultado = await extrairCampoDoTexto({ campo, textoDocumento, valorEsaj: esajVal });
+    } catch (err) {
+      console.warn(`[etapa-7.0] Falha ao consultar Claude para "${campo}": ${err.message}`);
+      resultado = { valorEncontrado: null, confianca: 'baixa', justificativa: `erro: ${err.message}` };
+    }
+    const aplicado = !!resultado.valorEncontrado && resultado.confianca === 'alta';
+    console.log(`  [etapa-7.0] ${campo}: ${aplicado ? `preenchido com "${resultado.valorEncontrado}"` : 'não preenchido'} (confiança ${resultado.confianca})`);
+    tentativas.push({ campo, ...resultado, aplicado });
+    if (aplicado) cabecalhoDoc[chaveDoc] = resultado.valorEncontrado;
+  }
+
+  return tentativas.length ? tentativas : null;
 }
 
 // // ── Etapa 7.2 (negativo): Notificar divergência por e-mail ───────────────────
@@ -1593,14 +1672,16 @@ async function processarServico(page, context, servicoAlvo = null) {
   // Etapa 5 — Localizar pasta e extrair cabeçalho do(s) PDF(s). No fluxo de Laudo com
   // Alvará, o Alvará tem seu próprio cabeçalho extraído aqui também — ambos precisam
   // ser conferidos contra o ESAJ antes de peticionar qualquer um dos dois (Etapa 7).
-  let pastaServico, pastaRecente, cabecalhoDoc, cabecalhoAlvara;
+  let pastaServico, pastaRecente, cabecalhoDoc, cabecalhoAlvara, textoDoc, textoAlvara;
   try {
     ({ pastaServico, pastaRecente } = localizarPastaServico(extracao.servico));
     extracao.pasta = { servico: pastaServico, recente: pastaRecente };
-    cabecalhoDoc = await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[0]);
+    ({ cabecalho: cabecalhoDoc, textoDocumento: textoDoc } =
+      await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[0]));
     extracao.cabecalhoDoc = cabecalhoDoc;
     if (buscarLaudo && fases.temAlvara && fases.documentosEsperados.length > 1) {
-      cabecalhoAlvara = await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[1]);
+      ({ cabecalho: cabecalhoAlvara, textoDocumento: textoAlvara } =
+        await extrairCabecalhoDocumento(pastaRecente, fases.documentosEsperados[1]));
       extracao.cabecalhoAlvara = cabecalhoAlvara;
     }
     salvarExtracao(extracao);
@@ -1626,6 +1707,25 @@ async function processarServico(page, context, servicoAlvo = null) {
   console.log(`[etapa-6] Partes: ${JSON.stringify(resultadoPartes.partes)}`);
   console.log(`[etapa-6] Cabeçalho ESAJ: ${JSON.stringify(cabecalhoESAJ)}`);
 
+  // Etapa 7.0 (via IA) — antes de comparar, tenta preencher campos que a extração do
+  // PDF (Etapa 5) deixou vazios mas o ESAJ tem valor cadastrado (ver
+  // preencherCamposVaziosComIA). Só altera cabecalhoDoc/cabecalhoAlvara quando a IA
+  // retorna confiança alta.
+  const tentativasCampoVazio = await preencherCamposVaziosComIA(cabecalhoDoc, extracao.esaj, textoDoc);
+  if (tentativasCampoVazio) {
+    extracao.fallbackCampoVazio = tentativasCampoVazio;
+    if (tentativasCampoVazio.some(t => t.aplicado)) extracao.peticionadoPorFallbackIA = true;
+    salvarExtracao(extracao);
+  }
+  const tentativasCampoVazioAlvara = cabecalhoAlvara
+    ? await preencherCamposVaziosComIA(cabecalhoAlvara, extracao.esaj, textoAlvara)
+    : null;
+  if (tentativasCampoVazioAlvara) {
+    extracao.fallbackCampoVazioAlvara = tentativasCampoVazioAlvara;
+    if (tentativasCampoVazioAlvara.some(t => t.aplicado)) extracao.peticionadoPorFallbackIA = true;
+    salvarExtracao(extracao);
+  }
+
   // Etapa 7 — Conferir dados do(s) documento(s) com ESAJ. No fluxo de Laudo com Alvará,
   // o Alvará também é conferido contra o mesmo cabeçalho ESAJ (mesmo processo) — uma
   // divergência em qualquer um dos dois bloqueia o peticionamento de ambos.
@@ -1641,39 +1741,103 @@ async function processarServico(page, context, servicoAlvo = null) {
   ].filter(c => !c.conferencia.ok);
 
   if (conferenciasPendentes.length > 0) {
-    let divergenciaSuperada = true;
     const todasPartes = extracao.esaj.todasPartes;
 
+    // Lista achatada de todo campo divergente (documento principal + Alvará), com um
+    // estado `bate` mutável — Etapa 7.1 e Etapa 7.5 vão marcando como resolvido, campo
+    // a campo, sem se importar com qual conferência (label) ele pertence.
+    const estados = [];
     for (const { label, conferencia: c, chave } of conferenciasPendentes) {
+      for (const r of c.campos) {
+        if (r.bate) continue;
+        estados.push({ label, chave, campo: r.campo, doc: r.doc, esaj: r.esaj });
+      }
+    }
+
+    // Etapa 7.1 — fallback tableTodasPartes (só resolve autor/reu; os demais campos só
+    // passam por aqui sem tentativa, e ficam para a Etapa 7.5).
+    for (const { label, chave } of conferenciasPendentes) {
       if (!todasPartes) {
         extracao[chave] = { tentativas: [], resultado: false, motivo: 'tableTodasPartes ausente' };
-        divergenciaSuperada = false;
         continue;
       }
       console.log(`[etapa-7.1] tableTodasPartes disponível — tentando fallback de partes (${label})...`);
       const tentativas = [];
-      // Percorre TODOS os campos divergentes (sem short-circuit): usar .every() aqui pararia
-      // no primeiro campo sem match e nunca testaria os seguintes (ex: "reu" batendo via
-      // fallback ficava sem registro se "autor" já tivesse falhado antes na lista de campos).
-      const resultados = c.campos.map(r => {
-        if (r.bate) return true;
-        if (r.campo !== 'autor' && r.campo !== 'reu') return false;
-        const role = r.campo === 'autor' ? 'AUTOR' : 'RÉU';
+      for (const est of estados) {
+        if (est.chave !== chave || est.resolvidoEm) continue;
+        if (est.campo !== 'autor' && est.campo !== 'reu') continue;
+        const role = est.campo === 'autor' ? 'AUTOR' : 'RÉU';
         const candidatos = todasPartes[role] ?? [];
-        const bateu = candidatos.some(cand => nomesBatem(r.doc, cand));
-        console.log(`  [etapa-7.1] ${r.campo} (${label}): doc="${r.doc}" candidatos=[${candidatos.join(' | ')}] → ${bateu ? '[OK]' : '[XX]'}`);
-        tentativas.push({ campo: r.campo, doc: r.doc, candidatos, bateu });
-        return bateu;
-      });
-      const resultadoDoc = resultados.every(Boolean);
+        const bateu = candidatos.some(cand => nomesBatem(est.doc, cand));
+        console.log(`  [etapa-7.1] ${est.campo} (${label}): doc="${est.doc}" candidatos=[${candidatos.join(' | ')}] → ${bateu ? '[OK]' : '[XX]'}`);
+        tentativas.push({ campo: est.campo, doc: est.doc, candidatos, bateu });
+        if (bateu) est.resolvidoEm = 'etapa-7.1';
+      }
       // Registro persistente do fallback — o console some entre execuções, mas isto
       // sobrevive em extracao-protocolo.json (até o próximo serviço) e no execucao.md
       // (para a duração de todo o lote), permitindo diagnosticar um "sem match" depois.
-      extracao[chave] = { tentativas, resultado: resultadoDoc };
-      if (!resultadoDoc) divergenciaSuperada = false;
+      extracao[chave] = { tentativas, resultado: tentativas.length > 0 && tentativas.every(t => t.bateu) };
     }
     salvarExtracao(extracao);
-    console.log(`[etapa-7.1] Fallback: ${divergenciaSuperada ? 'match encontrado em todos os documentos — prosseguindo' : 'sem match em ao menos um documento'}.`);
+
+    let restantes = estados.filter(e => !e.resolvidoEm);
+    console.log(`[etapa-7.1] Fallback: ${restantes.length === 0 ? 'match encontrado em todos os documentos — prosseguindo' : `sem match em ${restantes.length} campo(s) — tentando etapa 7.5 (IA)`}.`);
+
+    // Etapa 7.5 (via IA) — para todo campo que sobreviveu à 7.1 (autor/reu sem match no
+    // tableTodasPartes, ou qualquer outro campo — vara/foro/processo/classe — que nunca
+    // teve fallback determinístico), pergunta ao Claude se a diferença é só erro de
+    // digitação/formatação (mesmo dado) ou uma diferença substantiva real. Só libera o
+    // peticionamento quando TODOS os campos restantes vierem com confianca "alta" —
+    // qualquer um em dúvida (media/baixa) mantém a divergência normal.
+    //
+    // Para autor/reu, est.esaj é sempre o nome PRINCIPAL exibido pelo ESAJ (fixado na
+    // montagem de `estados`) — mas a 7.1 já pode ter encontrado, em tableTodasPartes, um
+    // candidato bem mais próximo do doc que só não bateu por não ser idêntico (ex: 1 letra
+    // de diferença). Comparar só contra o nome principal nesse caso manda a IA julgar o par
+    // errado. Por isso, para autor/reu, testa-se o doc contra CADA candidato do papel em
+    // tableTodasPartes (além do nome principal) — basta um vir mesmoValor=true + confianca
+    // "alta" para resolver o campo.
+    if (restantes.length > 0) {
+      const tentativasIA = [];
+      let todasResolvidasPorIA = true;
+      for (const est of restantes) {
+        const role = est.campo === 'autor' ? 'AUTOR' : est.campo === 'reu' ? 'RÉU' : null;
+        const candidatosParte = role ? (todasPartes?.[role] ?? []) : [];
+        const valoresEsaj = candidatosParte.length > 0
+          ? [...new Set([est.esaj, ...candidatosParte].filter(Boolean))]
+          : [est.esaj];
+
+        let resolvido = false;
+        for (const esajVal of valoresEsaj) {
+          let resultado;
+          try {
+            resultado = await avaliarSimilaridade({ campo: est.campo, docVal: est.doc, esajVal });
+          } catch (err) {
+            console.warn(`[etapa-7.5] Falha ao consultar Claude para "${est.campo}" (${est.label}): ${err.message}`);
+            resultado = { mesmoValor: false, confianca: 'baixa', justificativa: `erro: ${err.message}` };
+          }
+          console.log(`  [etapa-7.5] ${est.campo} (${est.label}): doc="${est.doc}" | esaj="${esajVal}" → ${resultado.mesmoValor ? 'MESMO' : 'DIFERENTE'} (confiança ${resultado.confianca})`);
+          tentativasIA.push({ label: est.label, campo: est.campo, doc: est.doc, esaj: esajVal, ...resultado });
+          if (resultado.mesmoValor && resultado.confianca === 'alta') {
+            resolvido = true;
+            break;
+          }
+        }
+        if (resolvido) {
+          est.resolvidoEm = 'etapa-7.5';
+        } else {
+          todasResolvidasPorIA = false;
+        }
+      }
+      extracao.fallbackSimilaridadeIA = { tentativas: tentativasIA, resultado: todasResolvidasPorIA };
+      salvarExtracao(extracao);
+      console.log(`[etapa-7.5] Fallback de IA: ${todasResolvidasPorIA ? 'todas as divergências restantes confirmadas como formatação/digitação — prosseguindo' : 'ao menos uma divergência real (ou confiança insuficiente) — mantendo divergência'}.`);
+      if (todasResolvidasPorIA) extracao.peticionadoPorFallbackIA = true;
+      salvarExtracao(extracao);
+      restantes = estados.filter(e => !e.resolvidoEm);
+    }
+
+    const divergenciaSuperada = restantes.length === 0;
 
     if (!divergenciaSuperada) {
       console.warn('[etapa-7] Dados divergem — notificação por e-mail pendente (configurar GMAIL_USUARIO/GMAIL_APP_PASSWORD).');
@@ -1879,74 +2043,122 @@ async function mainEtapa11() {
 
 // ── Relatório de execução (execucao.md) ──────────────────────────────────────
 
+// Formatação pensada para ser colada direto no chat do Gmail (Google Chat), não para
+// renderizar como Markdown de verdade: `*negrito*` (asterisco simples, não `**`), sem
+// `#`/`##`/`###` (o Chat mostra os `#` literalmente), bullets `•` em vez de `-`/`*`
+// (não depende do cliente reconhecer lista), e nada de indentação por espaços — o Chat
+// pode colapsar espaços à esquerda, então cada linha usa uma tag entre colchetes
+// (`[7.1]`, `[7.0 IA]`, `[7.5 IA]`) para indicar a origem em vez de aninhar visualmente.
+function formatarValor(v) {
+  return v ? `"${v}"` : '(vazio)';
+}
+
 // "Ponto de atenção" = qualquer serviço que não terminou ok (resultado.ok === false),
 // cobrindo todas as etapas que caem para subfase PROTOCOLAR: Etapa 3 (documentos não
 // conferem), Etapa 5 (PDF não encontrado/pasta ausente), Etapa 7 (dados divergem do
 // ESAJ), Etapa 7.3 (Laudo excede limite de tamanho) e Etapa 7.4 (PDF a peticionar
-// ausente na pasta, incluindo Alvará). Quando a Etapa 7 rodou, detalha
-// os campos que não bateram (conferencia.campos) e, se o fallback de tableTodasPartes
-// (Etapa 7.1) foi tentado, os candidatos testados (fallbackPartes) — preservado aqui
-// porque extracao-protocolo.json é sobrescrito a cada serviço do lote.
+// ausente na pasta, incluindo Alvará). Quando a Etapa 7 rodou, detalha os campos que
+// não bateram e toda tentativa de fallback (determinístico ou via IA) — preservado
+// aqui porque extracao-protocolo.json é sobrescrito a cada serviço do lote.
 function gerarRelatorioExecucao(servicosDoLote, relatorioExecucao) {
   if (servicosDoLote.length === 0) return;
 
   const linhas = [];
-  linhas.push(`# Execução — ${new Date().toLocaleString('pt-BR')}`);
+  linhas.push(`📋 *Execução — ${new Date().toLocaleString('pt-BR')}*`);
   linhas.push('');
-  linhas.push('## Executados');
-  linhas.push('');
-  for (const servico of servicosDoLote) {
-    linhas.push(`- ${servico}`);
-  }
-  linhas.push('');
-  linhas.push('## Pontos de Atenção');
+  linhas.push(`✅ *Executados (${servicosDoLote.length})*`);
+  linhas.push(servicosDoLote.join(', '));
   linhas.push('');
 
   const comAtencao = relatorioExecucao.filter(r => r.resultado?.ok === false);
+  linhas.push(`⚠️ *Pontos de Atenção (${comAtencao.length})*`);
+  linhas.push('');
   if (comAtencao.length === 0) {
     linhas.push('_Nenhuma divergência._');
+    linhas.push('');
   } else {
     for (const { servico, resultado } of comAtencao) {
-      linhas.push(`### ${servico}`);
-      linhas.push('');
-      linhas.push(`- **Motivo:** ${resultado.motivo ?? 'não informado'}`);
+      linhas.push(`🔸 *${servico}*`);
+      linhas.push(`• Motivo: ${resultado.motivo ?? 'não informado'}`);
+
       const divergencias = resultado.conferencia?.campos?.filter(c => !c.bate) ?? [];
-      if (divergencias.length > 0) {
-        linhas.push('- **Campos divergentes:**');
-        for (const d of divergencias) {
-          linhas.push(`  - \`${d.campo}\`: doc="${d.doc}" | esaj="${d.esaj}"`);
-        }
+      for (const d of divergencias) {
+        linhas.push(`• ${d.campo}: doc ${formatarValor(d.doc)} ≠ esaj ${formatarValor(d.esaj)}`);
       }
-      const tentativas = resultado.fallbackPartes?.tentativas ?? [];
-      if (resultado.fallbackPartes && !resultado.fallbackPartes.resultado) {
-        linhas.push('- **Fallback tableTodasPartes (Etapa 7.1):**');
-        if (resultado.fallbackPartes.motivo) {
-          linhas.push(`  - ${resultado.fallbackPartes.motivo}`);
-        }
-        for (const t of tentativas) {
-          if (t.bateu) continue;
-          linhas.push(`  - \`${t.campo}\`: doc="${t.doc}" | candidatos=[${t.candidatos.join(' | ')}]`);
-        }
+
+      if (resultado.fallbackPartes?.motivo) {
+        linhas.push(`• [7.1] ${resultado.fallbackPartes.motivo}`);
       }
-      // Laudo com Alvará: o Alvará tem sua própria conferência (Etapa 7) e fallback (7.1)
-      // contra o mesmo cabeçalho ESAJ — reportados separadamente quando divergentes.
+      for (const t of (resultado.fallbackPartes?.tentativas ?? []).filter(t => !t.bateu)) {
+        linhas.push(`• [7.1] ${t.campo} sem match — candidatos: ${t.candidatos.join(' | ')}`);
+      }
+
+      // Laudo com Alvará: o Alvará tem sua própria conferência (Etapa 7) e fallbacks
+      // (7.0/7.1/7.5) contra o mesmo cabeçalho ESAJ — reportados com o sufixo "(Alvará)".
       const divergenciasAlvara = resultado.conferenciaAlvara?.campos?.filter(c => !c.bate) ?? [];
-      if (divergenciasAlvara.length > 0) {
-        linhas.push('- **Campos divergentes (Alvará):**');
-        for (const d of divergenciasAlvara) {
-          linhas.push(`  - \`${d.campo}\`: doc="${d.doc}" | esaj="${d.esaj}"`);
+      for (const d of divergenciasAlvara) {
+        linhas.push(`• ${d.campo} (Alvará): doc ${formatarValor(d.doc)} ≠ esaj ${formatarValor(d.esaj)}`);
+      }
+
+      if (resultado.fallbackPartesAlvara?.motivo) {
+        linhas.push(`• [7.1 Alvará] ${resultado.fallbackPartesAlvara.motivo}`);
+      }
+      for (const t of (resultado.fallbackPartesAlvara?.tentativas ?? []).filter(t => !t.bateu)) {
+        linhas.push(`• [7.1 Alvará] ${t.campo} sem match — candidatos: ${t.candidatos.join(' | ')}`);
+      }
+
+      // Etapa 7.0 (via IA) — campo vazio na extração do PDF que a IA não conseguiu
+      // preencher com confiança alta (se tivesse conseguido, o campo não estaria mais
+      // divergente aqui).
+      for (const [rotulo, chave] of [['', 'fallbackCampoVazio'], [' Alvará', 'fallbackCampoVazioAlvara']]) {
+        for (const t of (resultado[chave] ?? []).filter(t => !t.aplicado)) {
+          linhas.push(`• [7.0 IA${rotulo}] ${t.campo} não localizado (confiança ${t.confianca}) — ${t.justificativa}`);
         }
       }
-      const tentativasAlvara = resultado.fallbackPartesAlvara?.tentativas ?? [];
-      if (resultado.fallbackPartesAlvara && !resultado.fallbackPartesAlvara.resultado) {
-        linhas.push('- **Fallback tableTodasPartes (Etapa 7.1 — Alvará):**');
-        if (resultado.fallbackPartesAlvara.motivo) {
-          linhas.push(`  - ${resultado.fallbackPartesAlvara.motivo}`);
+
+      // Etapa 7.5 (via IA) — julgamento de similaridade que não resolveu a divergência
+      // (mesmoValor=false, ou confiança insuficiente mesmo com mesmoValor=true).
+      const tentativasIA = (resultado.fallbackSimilaridadeIA?.tentativas ?? []).filter(
+        t => !(t.mesmoValor && t.confianca === 'alta')
+      );
+      for (const t of tentativasIA) {
+        linhas.push(`• [7.5 IA]${t.label ? ` (${t.label})` : ''} ${t.campo}: mesmoValor=${t.mesmoValor}, confiança=${t.confianca} — ${t.justificativa}`);
+      }
+
+      linhas.push('');
+    }
+  }
+
+  // Serviços que só foram peticionados porque a Etapa 7.0 (campo vazio) ou a Etapa 7.5
+  // (similaridade) confirmaram, via Claude, que a divergência encontrada na Etapa 7 era
+  // apenas erro de digitação/formatação (ou campo que a extração do PDF deixou vazio) —
+  // não uma diferença substantiva real. Aviso final para revisão humana pontual, já que
+  // a decisão de peticionar não veio só de comparação determinística de texto.
+  const peticionadosPorIA = relatorioExecucao.filter(
+    r => r.resultado?.ok === true && r.resultado?.peticionadoPorFallbackIA === true
+  );
+  linhas.push(`🤖 *Peticionados via fallback de IA (${peticionadosPorIA.length})*`);
+  linhas.push('');
+  if (peticionadosPorIA.length === 0) {
+    linhas.push('_Nenhum._');
+  } else {
+    linhas.push(
+      '_Peticionados normalmente, mas a conferência (Etapa 7) só passou porque o Claude confirmou a ' +
+      'divergência como formatação/digitação (7.5) ou preencheu um campo vazio (7.0). Vale conferência pontual._'
+    );
+    linhas.push('');
+    for (const { servico, resultado } of peticionadosPorIA) {
+      linhas.push(`🔹 *${servico}*`);
+      for (const [rotulo, chave] of [['', 'fallbackCampoVazio'], [' Alvará', 'fallbackCampoVazioAlvara']]) {
+        for (const t of (resultado[chave] ?? []).filter(t => t.aplicado)) {
+          linhas.push(`• [7.0 IA${rotulo}] ${t.campo} preenchido: "${t.valorEncontrado}" — ${t.justificativa}`);
         }
-        for (const t of tentativasAlvara) {
-          if (t.bateu) continue;
-          linhas.push(`  - \`${t.campo}\`: doc="${t.doc}" | candidatos=[${t.candidatos.join(' | ')}]`);
-        }
+      }
+      const confirmadasIA = (resultado.fallbackSimilaridadeIA?.tentativas ?? []).filter(
+        t => t.mesmoValor && t.confianca === 'alta'
+      );
+      for (const t of confirmadasIA) {
+        linhas.push(`• [7.5 IA]${t.label ? ` (${t.label})` : ''} ${t.campo}: doc ${formatarValor(t.doc)} ≠ esaj ${formatarValor(t.esaj)} — ${t.justificativa}`);
       }
       linhas.push('');
     }

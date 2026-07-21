@@ -298,27 +298,30 @@ Script standalone (não integrado ao fluxo principal) para validar a extração 
 
 ### 3.14 Relatório de Execução (`execucao.md`)
 
-Ao final do fluxo completo (`main()`), `gerarRelatorioExecucao()` grava `execucao.md` na raiz do projeto (sobrescrito a cada execução; gerado no bloco `finally`, mesmo se o loop for interrompido por erro):
+Ao final do fluxo completo (`main()`), `gerarRelatorioExecucao()` grava `execucao.md` na raiz do projeto (sobrescrito a cada execução; gerado no bloco `finally`, mesmo se o loop for interrompido por erro).
 
-- **Executados** — todos os serviços do lote (o `pending.json` capturado no início da execução, seja novo ou retomado).
-- **Pontos de Atenção** — subconjunto dos executados cujo `resultado.ok === false`, com o **Motivo** (documentos não conferem na Etapa 3, PDF/pasta não encontrado na Etapa 5, ou dados divergem na Etapa 7) e, quando a Etapa 7 rodou, os **campos divergentes** (`doc="..."` vs `esaj="..."`).
+**Formato pensado para colar direto no chat do Gmail (Google Chat), não Markdown "de verdade"** — o Chat não renderiza `#`/`##`/`###` nem `**negrito**` (mostra os caracteres literalmente), então o relatório usa `*negrito*` (asterisco simples), emoji como marcador de seção, bullets `•` (não depende do cliente reconhecer `-`/`*` como lista) e tags entre colchetes (`[7.1]`, `[7.0 IA]`, `[7.5 IA]`) em vez de indentação por espaço, que o Chat pode colapsar:
+
+- **✅ Executados** — todos os serviços do lote (o `pending.json` capturado no início da execução, seja novo ou retomado), em lista separada por vírgula.
+- **⚠️ Pontos de Atenção** — subconjunto dos executados cujo `resultado.ok === false`, com o **Motivo** (documentos não conferem na Etapa 3, PDF/pasta não encontrado na Etapa 5, dados divergem na Etapa 7, Laudo grande na 7.3, PDF ausente na 7.4) e, quando a Etapa 7 rodou, os **campos divergentes** e toda tentativa de fallback (determinístico ou via IA) que não resolveu.
+- **🤖 Peticionados via fallback de IA** — serviços que foram peticionados normalmente, mas só porque o Claude (Etapa 7.0/7.5, ver `src/web/claude-fallback.js`) confirmou uma divergência como formatação/digitação ou preencheu um campo vazio — aviso para conferência pontual.
 
 Exemplo:
-```markdown
-# Execução — 02/07/2026, 11:34:54
+```
+📋 *Execução — 02/07/2026, 11:34:54*
 
-## Executados
+✅ *Executados (2)*
+27.693, 29.555
 
-- 27.693
-- 29.555
+⚠️ *Pontos de Atenção (1)*
 
-## Pontos de Atenção
+🔸 *27.693*
+• Motivo: dados divergem entre documento(s) e ESAJ
+• reu: doc "NEWE SEGUROS S.A" ≠ esaj "NEWS SEGUROS S/A"
 
-### 27.693
+🤖 *Peticionados via fallback de IA (0)*
 
-- **Motivo:** dados divergem entre documento e ESAJ
-- **Campos divergentes:**
-  - `reu`: doc="NEWE SEGUROS S.A" | esaj="NEWS SEGUROS S/A"
+_Nenhum._
 ```
 
 ---
