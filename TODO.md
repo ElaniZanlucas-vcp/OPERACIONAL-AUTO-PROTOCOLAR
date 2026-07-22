@@ -3,6 +3,14 @@ TODO: Automação Protocolar - Ordenar
 ==============================
 [ROTINA-EXECUÇÃO]: 9h30, 11h40, 14h40
 
+const TIMEOUT_IMPORT_PADRAO = 5000;
+const TIMEOUT_IMPORT_LAUDO  = 60000;
+arquivos < 1MB -> TIMEOUT_IMPORT_PADRAO
+arquivos < 5MB -> 20s 
+arquivos < 10MB -> 60s
+arquivos > 10MB -> 120s
+
+
 [MELHORIA-GMAIL]
 - Criar conectores p/ enviar um gmail sobre inconsistências para os Responsáveis.
 

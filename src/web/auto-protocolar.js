@@ -1285,6 +1285,10 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
     const idResolvido = await btnSalvarFase.getAttribute('id').catch(() => '?');
     console.log(`[etapa-11] Clicando em Salvar Fase (id="${idResolvido}")...`);
   }
+  if (subfase === 'PROTOCOLAR') {
+    console.log('[etapa-11] Subfase PROTOCOLAR — aguardando 60s antes de Salvar Fase...');
+    await page.waitForTimeout(60000);
+  }
   await btnSalvarFase.click();
   await aguardarAjax(page);
   // Confirma que o dialog realmente fechou — se ficou aberto (ex: erro de validação
@@ -1360,6 +1364,8 @@ async function abrirFormularioPeticao(esajAba) {
 async function preencherDadosPeticao(esajAba, codigo) {
   console.log('[etapa-9] Preenchendo dados da petição...');
 
+  await esajAba.waitForTimeout(5000);
+
   // 1. PETICIONANTE — abrir dropdown → digitar → selecionar ÉRIKA → remover tag anterior
   console.log('[etapa-9] Peticionante...');
   const tagExistente = esajAba.locator('span.ui-select-match-text.pull-left').first();
@@ -1380,6 +1386,8 @@ async function preencherDadosPeticao(esajAba, codigo) {
     await cancelBtn.first().click();
   }
   console.log('[etapa-9] Peticionante ÉRIKA selecionada.');
+
+  await esajAba.waitForTimeout(5000);
 
   // 2. CLASSIFICAÇÃO — rejeita sugestão (se houver) e digita o código sempre
   console.log('[etapa-9] Classificação...');
@@ -1491,6 +1499,14 @@ async function tratarSugestaoClassificacao(aba, codigoEsperado) {
   }
 }
 
+function resolverTimeoutImportPorTamanho(filePath, timeoutPadrao) {
+  const tamanhoMB = fs.statSync(filePath).size / (1024 * 1024);
+  if (tamanhoMB < 1)  return timeoutPadrao;
+  if (tamanhoMB < 5)  return 20000;
+  if (tamanhoMB < 10) return 60000;
+  return 120000;
+}
+
 async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, documentosEsperados, temAlvara, fase, subfase }) {
   const codigo = resolverCodigoClassificacao(fase, subfase);
   const docs   = temAlvara && documentosEsperados.length > 1
@@ -1498,11 +1514,10 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
     : [documentosEsperados[0]];
   const codigos = [codigo, 38380];
 
-  // Fase Laudo: timeout maior no import do documento principal (Laudo) para
-  // conferirmos visualmente que o arquivo carrega corretamente no ESAJ.
+  // Fase Laudo: timeout maior no import do documento principal (Laudo), escalado
+  // pelo tamanho do arquivo — laudos maiores demoram mais para o ESAJ processar o import.
   const faseELaudo = /LAUDO/i.test(fase);
-  const TIMEOUT_IMPORT_PADRAO = 3000;
-  const TIMEOUT_IMPORT_LAUDO  = 60000;
+  const TIMEOUT_IMPORT_PADRAO = 5000;
 
   console.log(`[peticionar] Fase: ${fase} | Subfase: ${subfase} | Código: ${codigo} | Total docs: ${docs.length}`);
 
@@ -1525,7 +1540,9 @@ async function peticionarNoESAJ(esajAba, page, context, { pastaRecente, document
     }
 
     await abrirFormularioPeticao(abaAtual);
-    const timeoutCarregamento = (faseELaudo && i === 0) ? TIMEOUT_IMPORT_LAUDO : TIMEOUT_IMPORT_PADRAO;
+    const timeoutCarregamento = (faseELaudo && i === 0)
+      ? resolverTimeoutImportPorTamanho(filePath, TIMEOUT_IMPORT_PADRAO)
+      : TIMEOUT_IMPORT_PADRAO;
     await importarDocumentoESAJ(abaAtual, filePath, { timeoutCarregamento });
     await preencherDadosPeticao(abaAtual, codigos[i]);
 
