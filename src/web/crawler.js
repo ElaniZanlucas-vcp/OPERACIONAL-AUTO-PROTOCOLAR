@@ -39,15 +39,32 @@ function clonarPerfilChrome(destDir) {
   console.log('[crawler] Perfil clonado.');
 }
 
+// Mata só os processos chrome.exe / chrome_crashpad_handler.exe cuja linha de comando
+// referencia o userDataDir da automação — não afeta janelas do Chrome pessoal do usuário,
+// que rodam sobre um user-data-dir diferente (perfil real, não o clone).
+function matarChromeDoPerfil(userDataDir) {
+  const script = `
+$dir = '${userDataDir.replace(/\\/g, '\\\\').replace(/'/g, "''")}'
+Get-CimInstance Win32_Process -Filter "Name='chrome.exe' or Name='chrome_crashpad_handler.exe'" |
+  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($dir) } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  try {
+    execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { stdio: 'ignore' });
+  } catch {}
+}
+
 async function abrirBrowser() {
   const userDataDir = path.resolve(__dirname, '../../data/chrome-profile');
 
   // Clona o perfil real na primeira execução (login Google + extensões)
   clonarPerfilChrome(userDataDir);
 
-  // Encerra Chrome para liberar acesso exclusivo ao diretório do perfil
-  try { execSync('taskkill /f /im chrome.exe',                  { stdio: 'ignore' }); } catch {}
-  try { execSync('taskkill /f /im chrome_crashpad_handler.exe', { stdio: 'ignore' }); } catch {}
+  // Encerra APENAS os processos chrome.exe/crashpad que estejam usando o perfil de automação
+  // (data/chrome-profile), para liberar o SingletonLock sem fechar o Chrome pessoal do usuário
+  // (que roda sobre outro user-data-dir e não aparece no filtro abaixo).
+  matarChromeDoPerfil(userDataDir);
 
   // Aguarda Chrome encerrar completamente antes de lançar (evita "sessão existente")
   const tInicio = Date.now();

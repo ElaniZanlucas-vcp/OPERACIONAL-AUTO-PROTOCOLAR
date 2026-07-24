@@ -1286,8 +1286,8 @@ async function encaminharServico(page, { nome, observacao, subfase = 'AGUARDAR P
     console.log(`[etapa-11] Clicando em Salvar Fase (id="${idResolvido}")...`);
   }
   if (subfase === 'PROTOCOLAR') {
-    console.log('[etapa-11] Subfase PROTOCOLAR — aguardando 60s antes de Salvar Fase...');
-    await page.waitForTimeout(60000);
+    console.log('[etapa-11] Subfase PROTOCOLAR — aguardando 20s antes de Salvar Fase...');
+    await page.waitForTimeout(20000);
   }
   await btnSalvarFase.click();
   await aguardarAjax(page);

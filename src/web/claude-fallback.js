@@ -66,12 +66,20 @@ const SCHEMA_SIMILARIDADE = {
 
 async function avaliarSimilaridade({ campo, docVal, esajVal }) {
   const descricaoCampo = NOMES_CAMPO[campo] ?? campo;
+  // Para autor/reu, o sufixo " E OUTRO(S)"/" E OUTRA(S)" pode aparecer só de um lado (doc ou
+  // e-SAJ) só porque é gerado por regra de contagem em cada extração, não porque um lado
+  // realmente lista mais partes que o outro — sem essa observação, o modelo pode ler a
+  // presença/ausência do sufixo como indício de composição de partes diferente e baixar a
+  // confiança mesmo quando o nome-base é idêntico (ex.: serviço 29.842).
+  const notaSufixo = (campo === 'autor' || campo === 'reu')
+    ? '\n\nObservação: um sufixo " E OUTRO(S)"/" E OUTRA(S)" ao final do nome é gerado automaticamente por regra de contagem em cada extração (documento e e-SAJ, separadamente) para indicar "há mais de uma parte nesse papel" — não é parte do nome da pessoa/empresa e sua presença em só um dos dois textos não é, por si só, evidência de partes diferentes. Avalie a similaridade pelo nome-base (sem esse sufixo); só considere divergência substantiva se o nome-base já divergir.'
+    : '';
   const prompt = `Você está conferindo dados extraídos de um documento jurídico (PDF) contra o mesmo dado exibido no sistema do tribunal (e-SAJ) para o mesmo processo. Os dois textos abaixo deveriam representar ${descricaoCampo}, mas a comparação automática (normalização de texto) não encontrou correspondência exata.
 
 Texto do documento (PDF): "${docVal}"
 Texto do e-SAJ: "${esajVal}"
 
-Decida se os dois textos se referem ao MESMO dado/entidade — variando apenas por erro de digitação, abreviação, ordem das palavras, pontuação, espaçamento ou outra diferença puramente formal — ou se representam uma diferença SUBSTANTIVA real (pessoa/empresa diferente, número diferente, vara/comarca diferente, classe processual diferente).
+Decida se os dois textos se referem ao MESMO dado/entidade — variando apenas por erro de digitação, abreviação, ordem das palavras, pontuação, espaçamento ou outra diferença puramente formal — ou se representam uma diferença SUBSTANTIVA real (pessoa/empresa diferente, número diferente, vara/comarca diferente, classe processual diferente).${notaSufixo}
 
 Seja conservador: em caso de dúvida real sobre se é a mesma entidade, prefira mesmoValor=false ou confianca não-alta. Retorne confianca="alta" apenas quando tiver certeza de que a diferença é puramente formal.`;
 
